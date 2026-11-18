@@ -5,7 +5,7 @@ Python + pygame-ce 复刻 MechCommander 2（FASA Studio, 2001）的实时战术�
 ## 定位与许可声明（重要）
 
 - **学习项目，非商业用途**。MechCommander 2 官方源码来自微软 2006 Shared Source 发布（[源码镜像](https://github.com/videogamepreservation/mechcommander2)），该许可仅限非商业参考。
-- **不复用、不分发 MC2 原版美术/音频资产**。项目资产一律程序化生成或自建占位。官方源码仅作为机制设计的读码参考（数据格式如 .fit 机甲定义 / .abl 行为脚本的结构可借鉴）。
+- **MC2 原版美术/音频资产仅限本地学习使用**：可在本机加载官方 Shared Source 发布中的资产用于开发验证，不打包进仓库、不再分发、不用于任何商业用途。仓库内只保留程序化生成或自建占位资产。
 - 机制参考与里程碑依据：姊妹项目 PyCC2 的研究文档 `../PyCC2/docs/MC2_RESEARCH_20261118.md` §4。
 
 ## 架构
