@@ -12,6 +12,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from enum import Enum
+from typing import Any
 
 MAX_GUNNERY_RANK = 5.0
 KILL_RANK_WEIGHT = 0.25
@@ -66,3 +67,28 @@ class Pilot:
         击杀分量单调不减；命中率分量随双计数比值波动（全部命中场景下单调）。
         """
         return min(MAX_GUNNERY_RANK, self.kills * KILL_RANK_WEIGHT + self.gunnery_hit_rate * HIT_RATE_RANK_WEIGHT)
+
+    # ------------------------------------------------------------------ 序列化（M5 战役携带）
+
+    def to_dict(self) -> dict[str, Any]:
+        """可 JSON 化快照：姓名 + kills + 各技能 use/success 双计数（M5 任务间携带源）。"""
+        return {
+            "name": self.name,
+            "kills": self.kills,
+            "skill_stats": {
+                skill.value: {"uses": stats.uses, "successes": stats.successes}
+                for skill, stats in self.skill_stats.items()
+            },
+        }
+
+    @classmethod
+    def from_dict(cls, data: dict[str, Any]) -> Pilot:
+        """从快照重建驾驶员；未知技能键显式报错（存档损坏不静默吞掉）。"""
+        pilot = cls(str(data["name"]))
+        pilot.kills = int(data["kills"])
+        for key, stats in dict(data["skill_stats"]).items():
+            pilot.skill_stats[PilotSkill(key)] = SkillStats(
+                uses=int(stats["uses"]),
+                successes=int(stats["successes"]),
+            )
+        return pilot

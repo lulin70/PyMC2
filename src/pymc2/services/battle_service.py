@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import math
 import random
+from collections.abc import Callable
 
 from pymc2.domain.entities.mech import TILE_SIZE_PX, Faction, FireMode, Mech, Weapon
 from pymc2.domain.entities.mech_chassis import MechLocation, make_medium_chassis
@@ -42,6 +43,9 @@ class BattleService:
         self.selected_ids: list[str] = []
         self._rng: ShotRng = rng if rng is not None else random.Random()
         self.projectile_speed_px_s = projectile_speed_px_s
+        # M6 任务脚本钩子：每帧 tick 末尾回调（None = 不启用，M1-M5 存量零影响）。
+        # 返回值声明为 object 以兼容带返回值的回调（如 ScriptEngine.tick 返回触发 id 列表）。
+        self.tick_hook: Callable[[BattleService], object] | None = None
 
     def add_mech(self, mech: Mech) -> None:
         self.mechs[mech.id] = mech
@@ -185,7 +189,7 @@ class BattleService:
         return best
 
     def tick(self, dt: float) -> None:
-        """推进一帧：单位移动与冷却、弹道飞行、到达结算伤害。"""
+        """推进一帧：单位移动与冷却、弹道飞行、到达结算伤害、脚本触发器评估。"""
         for mech in self.mechs.values():
             mech.tick(dt)
         still_flying: list[Projectile] = []
@@ -195,6 +199,8 @@ class BattleService:
             else:
                 still_flying.append(projectile)
         self.projectiles = still_flying
+        if self.tick_hook is not None:
+            self.tick_hook(self)
 
     def _resolve_impact(self, projectile: Projectile) -> None:
         target = self.mechs.get(projectile.target_id)

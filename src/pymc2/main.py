@@ -1,28 +1,47 @@
-"""PyMC2 入口：M4 AI 指挥官（goal 分解自动作战）+ M2 玩家指令层。
+"""PyMC2 入口：M5 战役演示（任务链+整备闭环）+ M6 脚本驱动 + M4 AI 指挥官。
 
 游戏循环体拆为 create_game / handle_event / run_frame，供 e2e 测试以 dummy
 驱动 + event.post 复用同一套逻辑。玩家全部战术指令以 TacticalOrder
 （origin=PLAYER）经 OrderDispatcher 下发；AiCommander 每帧经 update()
-按 N tick 间隔产出 origin=COMMANDER 指令，与玩家指令同源同路径。
+按 N tick 间隔产出指令，与玩家指令同源同路径。
+
+M5/M6 演示循环（main）：双侧 AI 指挥官自动攻防；首关挂示例任务脚本
+（增援/RP 奖励/胜负/战报消息）；战斗结束打印结算与整备摘要（文本 UI，
+完整整备屏不在本里程碑范围），整备操作走 RefitService 真实调用。
 """
 
 from __future__ import annotations
 
 import math
 from dataclasses import dataclass, field
+from pathlib import Path
 
 import pygame
 
 from pymc2.domain.entities.mech import MAP_SIZE_PX, TILE_SIZE_PX, Faction, FireMode
 from pymc2.domain.orders.tactical_order import OrderOrigin, OrderType, TacticalOrder
+from pymc2.domain.scripting.mission_script import (
+    ScriptContext,
+    ScriptEngine,
+    load_mission_script,
+)
 from pymc2.presentation.renderer import WINDOW_HEIGHT_PX, WINDOW_WIDTH_PX, Renderer
 from pymc2.services.ai_commander import AiCommander
-from pymc2.services.battle_service import BattleService, create_m2_battle, create_m4_battle
+from pymc2.services.battle_service import BattleService, create_m2_battle
+from pymc2.services.campaign_state import CampaignState, start_campaign
+from pymc2.services.mission_chain import MissionChain, MissionResult
 from pymc2.services.order_dispatcher import OrderDispatcher
+from pymc2.services.refit_service import HIRE_COST_RP, RefitService
 
 FIRE_MODE_KEY = pygame.K_f
 MAX_FRAME_DT_S = 0.1
 CLICK_MAX_DRAG_PX = 4.0  # 拖拽位移低于该阈值视为单击（保留 M1 单击选中路径）
+MAX_RETRIES_PER_MISSION = 3  # demo 同任务连续战败上限（防自动演示死循环）
+
+
+def _default_script_path() -> Path:
+    """示例任务脚本路径（仓库 data/missions，与 cwd 无关）。"""
+    return Path(__file__).resolve().parents[2] / "data" / "missions" / "m1_river_crossing.json"
 
 
 @dataclass
@@ -181,20 +200,84 @@ def run_frame(game: Game, dt: float) -> None:
     game.frames += 1
 
 
+def _print_settlement(state: CampaignState, result: MissionResult) -> None:
+    """打印单任务结算摘要（文本 UI，M5 最小接线）。"""
+    lost = "、".join(result.lost_unit_ids) if result.lost_unit_ids else "无"
+    verdict = "胜利" if result.victory else "战败"
+    print(f"== 任务结算 {result.mission_id}: {verdict} ==")
+    print(
+        f"   RP +{result.rp_reward}(奖励) +{result.rp_salvage}(salvage)"
+        f" → 结余 {state.requisition_points} | 损失: {lost} | 幸存: {' '.join(result.survivor_ids) or '无'}"
+    )
+
+
+def _run_refit_phase(state: CampaignState, refit: RefitService) -> None:
+    """整备阶段：修复全部受损机甲 → RP 充足时购入一台新机甲；打印整备摘要。"""
+    print("== 整备 ==")
+    for mech in list(state.roster):
+        cost = refit.repair_cost(mech)
+        if cost > 0 and refit.repair(state, mech.id):
+            print(f"   修复 {mech.id}（-{cost} RP → 结余 {state.requisition_points}）")
+    hired = refit.hire(state)
+    if hired is not None:
+        print(f"   新购 {hired.id}（-{HIRE_COST_RP} RP → 结余 {state.requisition_points}）")
+
+
 def main() -> int:
-    """窗口主循环入口：M4 战局 + 敌方 AI 指挥官（goal 分解自动作战）。"""
+    """M5/M6 演示主循环：双侧 AI 自动攻防 + 首关任务脚本 + 结算/整备摘要输出。"""
     pygame.init()
     try:
         screen = pygame.display.set_mode((WINDOW_WIDTH_PX, WINDOW_HEIGHT_PX))
-        pygame.display.set_caption("PyMC2 - M4 AI Commander")
-        game = create_game(screen, service=create_m4_battle(), commander=AiCommander(Faction.ENEMY))
+        pygame.display.set_caption("PyMC2 - M5 Campaign / M6 Mission Script")
         clock = pygame.time.Clock()
-        while game.running:
-            dt = min(clock.tick(60) / 1000.0, MAX_FRAME_DT_S)
-            run_frame(game, dt)
+        state = start_campaign()
+        chain = MissionChain()
+        refit = RefitService()
+        script = load_mission_script(_default_script_path())
+        player_ai = AiCommander(Faction.PLAYER)
+        enemy_ai = AiCommander(Faction.ENEMY)
+        retries = 0
+        failed_mission_id: str | None = None
+        while chain.has_next(state):
+            mission = chain.current_def(state)
+            if mission.mission_id != failed_mission_id:
+                retries = 0  # 换关重置重试计数
+            roster_ids = " ".join(m.id for m in state.roster) or "无"
+            print(f"== 任务开始 {mission.mission_id}: {mission.title}（名册 {roster_ids}）==")
+            battle = chain.start_mission(state)
+            context = ScriptContext(battle=battle, campaign=state)
+            engine = ScriptEngine(script, context)
+            if state.mission_index == 0:
+                engine.attach(battle)  # 示例脚本叙事对应首关（增援/RP 奖励/胜负）
+            game = create_game(screen, service=battle)
+            while (
+                game.running
+                and context.outcome is None
+                and not chain.is_victory(battle)
+                and not chain.is_defeat(battle)
+            ):
+                player_ai.update(battle, game.dispatcher)
+                enemy_ai.update(battle, game.dispatcher)
+                dt = min(clock.tick(60) / 1000.0, MAX_FRAME_DT_S)
+                run_frame(game, dt)
+            if not game.running:
+                return 0  # QUIT：直接退出，不做结算
+            for message in context.messages:
+                print(f"   [战报] {message}")
+            result = chain.complete_mission(state, battle)
+            _print_settlement(state, result)
+            if result.victory:
+                _run_refit_phase(state, refit)
+            else:
+                retries += 1
+                failed_mission_id = result.mission_id
+                if retries >= MAX_RETRIES_PER_MISSION:
+                    print("== 战役失败：同任务连续战败 3 次，演示结束 ==")
+                    return 0
+        print(f"== 战役 {state.campaign_id} 完成：全 {len(chain.missions)} 任务结算 ==")
+        return 0
     finally:
         pygame.quit()
-    return 0
 
 
 if __name__ == "__main__":

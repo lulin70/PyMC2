@@ -36,9 +36,11 @@
 - 范围：任务链 + 整备闭环（salvage/refit/hire，对应 MC2 logistics 层）
 - 验收：e2e「整备变更带入下一任务」
 - 门禁：同 M1
+- 交付（2026-11-18）：services 层四件套——CampaignState（campaign_id/mission_index/RP/roster）+ 四档序列化（Pilot to_dict/from_dict 含 kills 与 use/success 双计数补齐 M4 遗留、chassis 各部位 armor/structure 余量、mech 整备快照含 max_hull 保 hull_ratio 分母口径、campaign 存档往返）；MissionChain 三关编制/位置/奖励递进（1/2/3 敌）+ is_victory/is_defeat 谓词 + complete_mission（胜利=奖励+salvage+指针推进，战败=仅 salvage 重试，同归于尽按目标达成计胜利）；SalvageService（摧毁机甲按剩余完好度比例 ×45 RP 折算，打空残骸 0）；RefitService（repair 缺口×0.5 RP/点满修、hire 固定 40 RP 购新机甲+rookie、carryover_survivors 存活回写/阵亡移除）；名册快照复制参战保证战斗损伤不直接污染名册（结算才回写）；e2e「任务 1 真战斗（seed 固定）→ 敌全灭结算 → repair px-02 + hire px-03 → 任务 2 开局逐台断言 rank/装甲/新机甲携带」截图 3 张存 docs/assets/uat_m5/。注：整备为 service 调用 + main 文本摘要，无 GUI 整备屏（本里程碑范围外）。
 
 ## M6 脚本化
 
 - 范围：Trigger 条件-动作 DSL + ABL 式任务脚本（参考 MC2 ABLT/ 结构，自建语法）
 - 验收：示例任务脚本全事件触发覆盖
 - 门禁：同 M1
+- 交付（2026-11-18）：domain/scripting/ 两件套——Trigger DSL（declarative frozen dataclass：条件五种 tick_reached/enemy_destroyed/unit_below_hull/unit_in_region/allies_destroyed + 动作五种 spawn_reinforcement/victory/defeat/grant_rp/show_message，JSON 可加载）+ MissionScript/ScriptEngine（照 PyCC2 TriggerSystem 精神：登记序评估 + once/cooldown 门控 + fire_count 可观测；经 BattleService.tick_hook 由 battle_service.tick 驱动，钩子默认 None 保存量零回归）；load_mission_script 统一包装错误（JSON 语法含行号/缺字段/未知 kind/缺必需参数均 MissionScriptError）；示例脚本 data/missions/m1_river_crossing.json 全 5 动作 + 全 5 条件覆盖；unit/integration/e2e 三层验收——示例脚本全事件覆盖（每动作至少一个用例执行 + 真战斗循环开场/渡口/增援/首杀/胜利全触发）、PRESERVE_FORCE 与脚本 defeat 共存不冲突、M6 e2e「增援空投 → dispatcher 交战 → RP 入账 → victory 结算」截图 3 张存 docs/assets/uat_m6/；main() 重写为 M5+M6 演示（双侧 AI 自动攻防 + 首关挂脚本 + 结算/整备文本摘要，QUIT 即退、同任务 3 连败熔断防演示死循环）。
