@@ -1,8 +1,9 @@
-"""PyMC2 入口：M2 指令层（框选 → 右键移动/攻击 → F 键火力姿态循环）。
+"""PyMC2 入口：M4 AI 指挥官（goal 分解自动作战）+ M2 玩家指令层。
 
 游戏循环体拆为 create_game / handle_event / run_frame，供 e2e 测试以 dummy
 驱动 + event.post 复用同一套逻辑。玩家全部战术指令以 TacticalOrder
-（origin=PLAYER）经 OrderDispatcher 下发，指令日志可序列化、可回放。
+（origin=PLAYER）经 OrderDispatcher 下发；AiCommander 每帧经 update()
+按 N tick 间隔产出 origin=COMMANDER 指令，与玩家指令同源同路径。
 """
 
 from __future__ import annotations
@@ -15,7 +16,8 @@ import pygame
 from pymc2.domain.entities.mech import MAP_SIZE_PX, TILE_SIZE_PX, Faction, FireMode
 from pymc2.domain.orders.tactical_order import OrderOrigin, OrderType, TacticalOrder
 from pymc2.presentation.renderer import WINDOW_HEIGHT_PX, WINDOW_WIDTH_PX, Renderer
-from pymc2.services.battle_service import BattleService, create_m2_battle
+from pymc2.services.ai_commander import AiCommander
+from pymc2.services.battle_service import BattleService, create_m2_battle, create_m4_battle
 from pymc2.services.order_dispatcher import OrderDispatcher
 
 FIRE_MODE_KEY = pygame.K_f
@@ -39,6 +41,7 @@ class Game:
     service: BattleService
     renderer: Renderer
     dispatcher: OrderDispatcher = field(default_factory=OrderDispatcher)
+    commander: AiCommander | None = None  # M4：注入则启用 AI 指挥官决策循环
     camera: Camera = field(default_factory=Camera)
     drag_start: tuple[float, float] | None = None
     drag_current: tuple[float, float] | None = None
@@ -46,12 +49,18 @@ class Game:
     running: bool = True
 
 
-def create_game(screen: pygame.Surface, *, service: BattleService | None = None) -> Game:
-    """组装一局 M2 战斗（service 可注入以便测试固定随机源）。"""
+def create_game(
+    screen: pygame.Surface,
+    *,
+    service: BattleService | None = None,
+    commander: AiCommander | None = None,
+) -> Game:
+    """组装一局战斗（service/commander 可注入以便测试固定随机源与 AI 开关）。"""
     return Game(
         screen=screen,
         service=service if service is not None else create_m2_battle(),
         renderer=Renderer(screen),
+        commander=commander,
     )
 
 
@@ -158,6 +167,8 @@ def run_frame(game: Game, dt: float) -> None:
     """处理输入、推进一帧并渲染。"""
     for event in pygame.event.get():
         handle_event(game, event)
+    if game.commander is not None:
+        game.commander.update(game.service, game.dispatcher)
     game.service.tick(dt)
     update_camera(game)
     drag_rect: tuple[float, float, float, float] | None = None
@@ -171,12 +182,12 @@ def run_frame(game: Game, dt: float) -> None:
 
 
 def main() -> int:
-    """窗口主循环入口。"""
+    """窗口主循环入口：M4 战局 + 敌方 AI 指挥官（goal 分解自动作战）。"""
     pygame.init()
     try:
         screen = pygame.display.set_mode((WINDOW_WIDTH_PX, WINDOW_HEIGHT_PX))
-        pygame.display.set_caption("PyMC2 - M2 Command Layer")
-        game = create_game(screen)
+        pygame.display.set_caption("PyMC2 - M4 AI Commander")
+        game = create_game(screen, service=create_m4_battle(), commander=AiCommander(Faction.ENEMY))
         clock = pygame.time.Clock()
         while game.running:
             dt = min(clock.tick(60) / 1000.0, MAX_FRAME_DT_S)

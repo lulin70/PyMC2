@@ -18,6 +18,7 @@ from dataclasses import dataclass
 from enum import Enum
 
 from pymc2.domain.entities.mech_chassis import MechChassis, MechLocation
+from pymc2.domain.entities.pilot import Pilot
 from pymc2.domain.systems.heat import HeatSystem
 
 TILE_SIZE_PX = 32
@@ -80,6 +81,7 @@ class Mech:
         hull: int = 100,
         weapon: Weapon | None = None,
         chassis: MechChassis | None = None,
+        pilot: Pilot | None = None,
     ) -> None:
         self.id = mech_id
         self.faction = faction
@@ -91,6 +93,8 @@ class Mech:
         self.chassis.mount_weapon(self.weapon)
         self.max_hull = int(round(self.chassis.total_integrity))
         self.heat = HeatSystem()
+        # 驾驶员可选（缺省无驾驶员 → 弹道技能系数中性 1.0，M1/M2 兼容）。
+        self.pilot = pilot
         self.move_target: tuple[float, float] | None = None
         self.fire_mode = FireMode.FREE
         self.guarding = False

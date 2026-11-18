@@ -7,6 +7,7 @@ import random
 
 from pymc2.domain.entities.mech import TILE_SIZE_PX, Faction, FireMode, Mech, Weapon
 from pymc2.domain.entities.mech_chassis import MechLocation, make_medium_chassis
+from pymc2.domain.entities.pilot import Pilot
 from pymc2.domain.systems.ballistic import (
     DEFAULT_PROJECTILE_SPEED_PX_S,
     Projectile,
@@ -150,6 +151,9 @@ class BattleService:
         if distance > attacker.weapon.range_px:
             return False
         result = resolve_shot(attacker, target, self._rng)
+        # M4 技能成长：开火即记账（uses 必增，命中加记 successes）。
+        if attacker.pilot is not None:
+            attacker.pilot.record_shot(result.hit)
         self.projectiles.append(
             Projectile(
                 attacker_id=attacker.id,
@@ -196,7 +200,12 @@ class BattleService:
         target = self.mechs.get(projectile.target_id)
         if target is None or not target.alive or not projectile.will_hit:
             return
-        target.apply_damage(projectile.location, projectile.damage)
+        killed = target.apply_damage(projectile.location, projectile.damage)
+        # M4 技能成长：击杀归属开火方驾驶员（kills 只增不减）。
+        if killed:
+            attacker = self.mechs.get(projectile.attacker_id)
+            if attacker is not None and attacker.pilot is not None:
+                attacker.pilot.record_kill()
 
 
 def create_m1_battle(*, rng: ShotRng | None = None) -> BattleService:
@@ -244,6 +253,45 @@ def create_m3_battle(*, rng: ShotRng | None = None) -> BattleService:
             ey,
             chassis=make_medium_chassis(),
             weapon=Weapon("mlaser", ENEMY_WEAPON_DAMAGE, 360.0, 2.5, mounted_location=MechLocation.RA),
+        )
+    )
+    return service
+
+
+def create_m4_battle(*, rng: ShotRng | None = None) -> BattleService:
+    """构建 M4 AI 战局：玩家单机（固定靶位）+ 敌方双机甲（AI 指挥官部下），全员驾驶员。"""
+    service = BattleService(rng=rng)
+    px, py = _tile_center(*PLAYER_SPAWN_TILE)
+    e1x, e1y = _tile_center(*ENEMY_SPAWN_TILE)
+    e2x, e2y = _tile_center(20, 13)
+    service.add_mech(
+        Mech(
+            "px-01",
+            Faction.PLAYER,
+            px,
+            py,
+            weapon=Weapon("ppc", PLAYER_WEAPON_DAMAGE, 420.0, 2.0),
+            pilot=Pilot("player-gunner"),
+        )
+    )
+    service.add_mech(
+        Mech(
+            "ex-01",
+            Faction.ENEMY,
+            e1x,
+            e1y,
+            weapon=Weapon("mlaser", ENEMY_WEAPON_DAMAGE, 360.0, 2.5),
+            pilot=Pilot("enemy-veteran"),
+        )
+    )
+    service.add_mech(
+        Mech(
+            "ex-02",
+            Faction.ENEMY,
+            e2x,
+            e2y,
+            weapon=Weapon("mlaser", ENEMY_WEAPON_DAMAGE, 360.0, 2.5),
+            pilot=Pilot("enemy-rookie"),
         )
     )
     return service

@@ -29,6 +29,7 @@
 - 范围：驾驶员技能模型（use/success 双计数成长）+ 指挥官 goal 分解（GOAL_OBJECT/GOAL_REGION）
 - 验收：AI 对战压力场景无死锁；技能 rank 单调性单测
 - 门禁：同 M1
+- 交付（2026-11-18）：Pilot 技能模型（PilotSkill/SkillStats 双计数参照 PyCC2 Wave 2，gunnery_rank 派生封顶 5.0）+ 弹道消费点（hit_probability × (0.85+rank*0.06) 钳 [0.7,1.2]，无驾驶员中性 1.0 保存量 148 例零回归）+ AiCommander goal 分解（PRESERVE_FORCE（hull<30% 后撤）/ DESTROY_OBJECT（最弱优先、超射程先接近 standoff）/ SECURE_REGION（敌全灭转中央区域）带完成条件谓词，决策间隔 N 与回退工厂可注入，update 每帧驱动）+ BattleService 开火/击杀记账；单测+集成覆盖 rank 单调成长、goal 切换、shutdown/部位摧毁健壮性、N=1 与 N=30 可重放；e2e「AI 指挥 vs 玩家单机自动摧毁 + 后撤触发」截图 4 张存 docs/assets/uat_m4/。
 
 ## M5 战役
 

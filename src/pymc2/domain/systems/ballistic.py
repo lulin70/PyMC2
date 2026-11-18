@@ -20,6 +20,13 @@ MIN_SCATTER_PX = 8.0
 MAX_SCATTER_PX = 48.0
 DEFAULT_PROJECTILE_SPEED_PX_S = 480.0
 
+# M4 驾驶员技能系数：rank 0 → 0.85，rank 5 → 1.15；钳 [0.7, 1.2] 防越界。
+# 无驾驶员（skill_rank=None）→ 中性 1.0（M1/M2 兼容口径）。
+SKILL_BASE_MULTIPLIER = 0.85
+SKILL_RANK_STEP = 0.06
+SKILL_MULTIPLIER_MIN = 0.7
+SKILL_MULTIPLIER_MAX = 1.2
+
 
 class ShotRng(Protocol):
     """开火判定所需的随机源协议（random.Random 天然满足）。"""
@@ -72,19 +79,28 @@ class Projectile:
         return False
 
 
-def hit_probability(distance_px: float, weapon_range_px: float) -> float:
-    """按距离返回命中率（0.0-1.0）：线性衰减。"""
+def skill_multiplier(skill_rank: float | None) -> float:
+    """驾驶员技能系数：0.85 + rank*0.06，钳 [0.7, 1.2]；无驾驶员（None）→ 1.0。"""
+    if skill_rank is None:
+        return 1.0
+    raw = SKILL_BASE_MULTIPLIER + SKILL_RANK_STEP * skill_rank
+    return max(SKILL_MULTIPLIER_MIN, min(SKILL_MULTIPLIER_MAX, raw))
+
+
+def hit_probability(distance_px: float, weapon_range_px: float, *, skill_rank: float | None = None) -> float:
+    """按距离返回命中率（0.0-1.0）：线性衰减 × 驾驶员技能系数（M4 消费点）。"""
     if distance_px >= weapon_range_px:
         return 0.0
-    if distance_px <= 0.0:
-        return 1.0
-    return 1.0 - HIT_FALLOFF * (distance_px / weapon_range_px)
+    base = 1.0 if distance_px <= 0.0 else 1.0 - HIT_FALLOFF * (distance_px / weapon_range_px)
+    return min(1.0, base * skill_multiplier(skill_rank))
 
 
 def resolve_shot(attacker: Mech, target: Mech, rng: ShotRng) -> ShotResult:
-    """结算一次直射开火：命中率乘热量精度惩罚，命中部位按权重随机。"""
+    """结算一次直射开火：命中率乘技能系数与热量精度惩罚，命中部位按权重随机。"""
     distance = math.hypot(target.x - attacker.x, target.y - attacker.y)
-    probability = hit_probability(distance, attacker.weapon.range_px) * attacker.heat.accuracy_multiplier
+    skill_rank = attacker.pilot.gunnery_rank if attacker.pilot is not None else None
+    probability = hit_probability(distance, attacker.weapon.range_px, skill_rank=skill_rank)
+    probability *= attacker.heat.accuracy_multiplier
     if rng.random() < probability:
         return ShotResult(True, attacker.weapon.damage, target.x, target.y, roll_location(rng))
     angle = rng.uniform(0.0, math.tau)
