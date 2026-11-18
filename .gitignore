@@ -1,0 +1,17 @@
+# PyMC2 gitignore（继承 PyCC2 惯例）
+__pycache__/
+*.py[cod]
+*.egg-info/
+.venv/
+build/
+dist/
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+htmlcov/
+.coverage
+coverage.xml
+docs/assets/**/*.diff.png
+tests/visual_regression/.diff/
+*.log
+tmp/
