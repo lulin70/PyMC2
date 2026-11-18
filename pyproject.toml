@@ -25,6 +25,7 @@ where = ["src"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
+timeout = 120
 
 [tool.ruff]
 line-length = 120
