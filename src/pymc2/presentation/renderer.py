@@ -40,6 +40,7 @@ _FACTION_COLORS: dict[Faction, tuple[int, int, int]] = {
 _MECH_BORDER_COLOR = (20, 24, 28)
 _SELECTION_COLOR = (250, 210, 60)
 _MOVE_MARKER_COLOR = (250, 150, 40)
+_ATTACK_MARK_COLOR = (255, 96, 64)
 _PROJECTILE_COLOR = (255, 230, 120)
 _LABEL_COLOR = (230, 230, 230)
 
@@ -94,17 +95,35 @@ class Renderer:
     def world_to_screen(self, x: float, y: float, cam_x: float, cam_y: float) -> tuple[int, int]:
         return (int(x - cam_x), int(y - cam_y))
 
-    def render(self, service: BattleService, cam_x: float, cam_y: float) -> None:
-        """绘制一帧：地形 → 移动标记 → 弹丸 → 机甲（血条/选中框）。"""
+    def render(
+        self,
+        service: BattleService,
+        cam_x: float,
+        cam_y: float,
+        *,
+        drag_rect: tuple[float, float, float, float] | None = None,
+    ) -> None:
+        """绘制一帧：地形 → 移动标记 → 弹丸 → 机甲（血条/选中框）→ 攻击高亮 → 框选矩形 → HUD。"""
         self.screen.fill(_GRASS_BASE)
         self.screen.blit(self._terrain, (-int(cam_x), -int(cam_y)))
-        selected = service.selected
-        if selected is not None and selected.move_target is not None:
-            self._draw_move_marker(selected.move_target, cam_x, cam_y)
+        for uid in service.selected_ids:
+            mech = service.get(uid)
+            if mech is not None and mech.move_target is not None:
+                self._draw_move_marker(mech.move_target, cam_x, cam_y)
         for projectile in service.projectiles:
             self._draw_projectile(projectile, cam_x, cam_y)
         for mech in service.mechs.values():
-            self._draw_mech(mech, cam_x, cam_y, selected=mech.id == service.selected_id)
+            self._draw_mech(mech, cam_x, cam_y, selected=mech.id in service.selected_ids)
+        for uid in service.selected_ids:
+            mech = service.get(uid)
+            if mech is None or mech.attack_target_id is None:
+                continue
+            target = service.get(mech.attack_target_id)
+            if target is not None and target.alive:
+                self._draw_attack_mark(target, cam_x, cam_y)
+        if drag_rect is not None:
+            self._draw_drag_rect(drag_rect, cam_x, cam_y)
+        self._draw_hud(service)
 
     def _draw_mech(self, mech: Mech, cam_x: float, cam_y: float, *, selected: bool) -> None:
         sx, sy = self.world_to_screen(mech.x, mech.y, cam_x, cam_y)
@@ -137,6 +156,35 @@ class Renderer:
         pygame.draw.rect(self.screen, _MOVE_MARKER_COLOR, rect, 2)
         pygame.draw.line(self.screen, _MOVE_MARKER_COLOR, rect.topleft, rect.bottomright, 2)
         pygame.draw.line(self.screen, _MOVE_MARKER_COLOR, rect.bottomleft, rect.topright, 2)
+
+    def _draw_attack_mark(self, target: Mech, cam_x: float, cam_y: float) -> None:
+        """攻击目标高亮：围绕被指定目标画一圈红色外框（M1 几何风格）。"""
+        sx, sy = self.world_to_screen(target.x, target.y, cam_x, cam_y)
+        half = _MECH_SIZE_PX // 2
+        rect = pygame.Rect(sx - half, sy - half, _MECH_SIZE_PX, _MECH_SIZE_PX)
+        pygame.draw.rect(self.screen, _ATTACK_MARK_COLOR, rect.inflate(12, 12), 2)
+
+    def _draw_drag_rect(self, rect: tuple[float, float, float, float], cam_x: float, cam_y: float) -> None:
+        """框选拖拽矩形（世界坐标四元组 → 屏幕细边框）。"""
+        x0, y0, x1, y1 = rect
+        sx0, sy0 = self.world_to_screen(min(x0, x1), min(y0, y1), cam_x, cam_y)
+        sx1, sy1 = self.world_to_screen(max(x0, x1), max(y0, y1), cam_x, cam_y)
+        pygame.draw.rect(self.screen, _SELECTION_COLOR, pygame.Rect(sx0, sy0, sx1 - sx0, sy1 - sy0), 1)
+
+    def _draw_hud(self, service: BattleService) -> None:
+        """底部状态行：主选中机甲火力姿态（含警戒）与选中列表。"""
+        if self._font is None:
+            return
+        primary = service.selected
+        if primary is None:
+            stance = "-"
+        else:
+            stance = primary.fire_mode.value.upper()
+            if primary.guarding:
+                stance += "+GUARD"
+        names = ",".join(service.selected_ids) if service.selected_ids else "-"
+        line = self._font.render(f"FIRE: {stance} | SEL: {names}", True, _LABEL_COLOR)
+        self.screen.blit(line, (8, self.screen.get_height() - 20))
 
     def _draw_projectile(self, projectile: Projectile, cam_x: float, cam_y: float) -> None:
         sx, sy = self.world_to_screen(projectile.x, projectile.y, cam_x, cam_y)

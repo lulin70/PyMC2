@@ -24,6 +24,13 @@ class Faction(Enum):
     ENEMY = "enemy"
 
 
+class FireMode(Enum):
+    """火力姿态（MC2 fire mode 简化版）：FREE 自由开火 / HOLD 保持火力。"""
+
+    FREE = "free"
+    HOLD = "hold"
+
+
 @dataclass
 class Weapon:
     """直射武器：伤害固定，命中判定在 ballistic 系统完成。"""
@@ -67,6 +74,9 @@ class Mech:
         self.alive = True
         self.weapon = weapon if weapon is not None else Weapon("standard", 10, 400.0, 2.0)
         self.move_target: tuple[float, float] | None = None
+        self.fire_mode = FireMode.FREE
+        self.guarding = False
+        self.attack_target_id: str | None = None
 
     @property
     def position(self) -> tuple[float, float]:

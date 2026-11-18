@@ -1,11 +1,11 @@
-"""战斗编排服务：移动指令、开火指令与逐帧推进（M1）。"""
+"""战斗编排服务：移动/开火/停止/火力姿态指令与逐帧推进（M1+M2）。"""
 
 from __future__ import annotations
 
 import math
 import random
 
-from pymc2.domain.entities.mech import TILE_SIZE_PX, Faction, Mech, Weapon
+from pymc2.domain.entities.mech import TILE_SIZE_PX, Faction, FireMode, Mech, Weapon
 from pymc2.domain.systems.ballistic import (
     DEFAULT_PROJECTILE_SPEED_PX_S,
     Projectile,
@@ -37,7 +37,7 @@ class BattleService:
     ) -> None:
         self.mechs: dict[str, Mech] = {}
         self.projectiles: list[Projectile] = []
-        self.selected_id: str | None = None
+        self.selected_ids: list[str] = []
         self._rng: ShotRng = rng if rng is not None else random.Random()
         self.projectile_speed_px_s = projectile_speed_px_s
 
@@ -48,36 +48,91 @@ class BattleService:
         return self.mechs.get(mech_id)
 
     @property
+    def selected_id(self) -> str | None:
+        """主选中单位 id（多选时为首个）。"""
+        return self.selected_ids[0] if self.selected_ids else None
+
+    @property
     def selected(self) -> Mech | None:
-        if self.selected_id is None:
+        sid = self.selected_id
+        if sid is None:
             return None
-        return self.mechs.get(self.selected_id)
+        return self.mechs.get(sid)
 
     def select_at(self, x: float, y: float) -> bool:
-        """选中点击处的己方机甲（敌方不可选）。"""
+        """选中点击处的己方机甲（敌方不可选，替换当前选择）。"""
+        mech = self.unit_at(x, y, faction=Faction.PLAYER)
+        if mech is None:
+            return False
+        self.selected_ids = [mech.id]
+        return True
+
+    def select_in_rect(self, x0: float, y0: float, x1: float, y1: float) -> int:
+        """框选：替换当前选择为矩形内全部己方机甲；返回选中数量（0 表示清空）。"""
+        left, right = min(x0, x1), max(x0, x1)
+        top, bottom = min(y0, y1), max(y0, y1)
+        picked: list[str] = []
         for mech in self.mechs.values():
             if mech.faction is not Faction.PLAYER:
                 continue
+            if left <= mech.x <= right and top <= mech.y <= bottom:
+                picked.append(mech.id)
+        self.selected_ids = picked
+        return len(picked)
+
+    def unit_at(self, x: float, y: float, *, faction: Faction | None = None) -> Mech | None:
+        """返回命中点击处的机甲（可按阵营过滤），无命中返回 None。"""
+        for mech in self.mechs.values():
+            if faction is not None and mech.faction is not faction:
+                continue
             if abs(mech.x - x) <= SELECT_HALF_PX and abs(mech.y - y) <= SELECT_HALF_PX:
-                self.selected_id = mech.id
-                return True
-        return False
+                return mech
+        return None
 
     def move_mech(self, mech_id: str, x: float, y: float) -> bool:
-        """下达移动指令。"""
+        """下达移动指令（移动即解除警戒姿态）。"""
         mech = self.mechs.get(mech_id)
         if mech is None or not mech.alive:
             return False
+        mech.guarding = False
         mech.move_to(x, y)
         return True
 
+    def set_fire_mode(self, mech_id: str, mode: FireMode) -> bool:
+        """设置火力姿态（HOLD 后 fire_at 被拒绝直至恢复 FREE）。"""
+        mech = self.mechs.get(mech_id)
+        if mech is None or not mech.alive:
+            return False
+        mech.fire_mode = mode
+        return True
+
+    def stop_mech(self, mech_id: str) -> bool:
+        """停止当前移动（警戒姿态不变）。"""
+        mech = self.mechs.get(mech_id)
+        if mech is None or not mech.alive:
+            return False
+        mech.move_target = None
+        return True
+
+    def set_guard(self, mech_id: str, *, guarding: bool = True) -> bool:
+        """设置警戒姿态：原地不追击（警戒时清除移动目标）。"""
+        mech = self.mechs.get(mech_id)
+        if mech is None or not mech.alive:
+            return False
+        mech.guarding = guarding
+        if guarding:
+            mech.move_target = None
+        return True
+
     def fire_at(self, attacker_id: str, target_id: str) -> bool:
-        """直射开火：校验存活/冷却/射程后立即判定命中，弹丸进入飞行。"""
+        """直射开火：校验存活/火力姿态/冷却/射程后立即判定命中，弹丸进入飞行。"""
         attacker = self.mechs.get(attacker_id)
         target = self.mechs.get(target_id)
         if attacker is None or target is None:
             return False
         if not attacker.alive or not target.alive:
+            return False
+        if attacker.fire_mode is FireMode.HOLD:
             return False
         if not attacker.weapon.ready:
             return False
@@ -138,5 +193,17 @@ def create_m1_battle(*, rng: ShotRng | None = None) -> BattleService:
     px, py = _tile_center(*PLAYER_SPAWN_TILE)
     ex, ey = _tile_center(*ENEMY_SPAWN_TILE)
     service.add_mech(Mech("px-01", Faction.PLAYER, px, py, weapon=Weapon("ppc", PLAYER_WEAPON_DAMAGE, 420.0, 2.0)))
+    service.add_mech(Mech("ex-01", Faction.ENEMY, ex, ey, weapon=Weapon("mlaser", ENEMY_WEAPON_DAMAGE, 360.0, 2.5)))
+    return service
+
+
+def create_m2_battle(*, rng: ShotRng | None = None) -> BattleService:
+    """构建 M2 指令层初始战局：双己方机甲（框选/多单位指令验收）+ 敌方机甲。"""
+    service = BattleService(rng=rng)
+    px1, py1 = _tile_center(*PLAYER_SPAWN_TILE)
+    px2, py2 = _tile_center(8, 10)
+    ex, ey = _tile_center(*ENEMY_SPAWN_TILE)
+    service.add_mech(Mech("px-01", Faction.PLAYER, px1, py1, weapon=Weapon("ppc", PLAYER_WEAPON_DAMAGE, 420.0, 2.0)))
+    service.add_mech(Mech("px-02", Faction.PLAYER, px2, py2, weapon=Weapon("mlaser", 15, 380.0, 1.5)))
     service.add_mech(Mech("ex-01", Faction.ENEMY, ex, ey, weapon=Weapon("mlaser", ENEMY_WEAPON_DAMAGE, 360.0, 2.5)))
     return service

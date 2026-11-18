@@ -35,4 +35,5 @@ src/pymc2/
 
 ## 状态
 
-脚手架立项（2026-11-18）。M1 未开始。
+- M1 垂直切片：已交付（2026-11-18）。场景渲染 / 单机移动 / 直射开火 / 命中判定，e2e 截图存 docs/assets/uat_m1/。
+- M2 指令层：已交付（2026-11-18）。TacticalOrder DSL（7 类指令 + origin 三来源，可序列化）、OrderDispatcher 单一入口（环形指令日志 maxlen=2000）、框选 / 右键指令 / F 键火力姿态、AiCommander 决策入口占位；回放一致性集成测试通过，e2e 截图存 docs/assets/uat_m2/。注：F 键自 M2 起为火力姿态循环，开火统一改为右键敌方目标。

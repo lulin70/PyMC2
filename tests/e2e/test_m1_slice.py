@@ -2,6 +2,8 @@
 
 ROADMAP M1 验收：e2e 脚本「选中 → 移动 → 开火 → 掉血」全链路截图存
 docs/assets/uat_m1/。dummy 视频驱动 + pygame.event.post 模拟真实输入。
+注：M2 起 F 键改为火力姿态循环，开火输入统一为右键点击敌方目标；
+M1 链路语义不变，仅开火入口随 M2 输入层演进。
 """
 
 from __future__ import annotations
@@ -87,10 +89,9 @@ def test_m1_full_chain_selected_moved_fired_damaged(game: main_module.Game) -> N
     assert player.position == (464.0, 336.0)
     saved.append(save_screenshot(game.screen, "03_arrived.png"))
 
-    # --- 步骤 4：F 键开火 → 弹丸飞行 → 命中掉血 ---
+    # --- 步骤 4：右键敌机甲下达攻击指令开火（M2 起 F 键改为火力姿态）→ 弹丸飞行 ---
     hull_before = enemy.hull
-    pygame.event.post(pygame.event.Event(pygame.KEYDOWN, key=pygame.K_f, mod=0))
-    pygame.event.post(pygame.event.Event(pygame.KEYUP, key=pygame.K_f, mod=0))
+    post_click(592, 336, button=3)
     main_module.run_frame(game, 1 / 60)
     assert len(game.service.projectiles) == 1
     saved.append(save_screenshot(game.screen, "04_projectile_in_flight.png"))

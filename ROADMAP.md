@@ -15,6 +15,7 @@
 - 范围：TacticalOrder DSL（类型化数据对象 + origin 三来源，MC2 tacordr.h 同款设计）+ 框选/右键指令/火力姿态
 - 验收：同一指令序列重放两次结果一致；真实窗口 UAT 点击链路 PASS
 - 门禁：同 M1
+- 交付（2026-11-18）：7 类指令 DSL（含 to_dict/from_dict 序列化）+ OrderDispatcher 单一入口（_order_log 环形队列 maxlen=2000）+ AiCommander 占位（origin=COMMANDER）；集成测试验证「同一指令序列两次重放 → 位置/伤害/日志完全一致」且 AI 与玩家指令同源；e2e「框选两台 → 右键移动 → F 切火力姿态 → 开火 → 掉血」截图 5 张存 docs/assets/uat_m2/。注：F 键自 M2 起为火力姿态循环，开火改为右键敌方目标，M1 e2e 开火入口随此演进。
 
 ## M3 机甲实体
 
