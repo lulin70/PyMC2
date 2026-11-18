@@ -22,6 +22,7 @@
 - 范围：部位装甲/内部结构/武器槽/热量累积与散热
 - 验收：单测覆盖部位摧毁顺序与 WeaponBolt 判定路径
 - 门禁：同 M1
+- 交付（2026-11-18）：MechChassis 八部位（BodyPart 先 armor 后 structure、溢出沿传导链、CT/HEAD 全毁 → alive 派生、LA/RA 摧毁武器失效、LL/RL/侧躯 mobility 惩罚折算移速）+ Weapon.mounted_location 武器槽 + HeatSystem（0-100 钳制、0.5/s 散热、环境加成接口预留、≥80 命中率 ×0.7、100 强制 shutdown 2s 只散热）；fire_at 结算改走部位命中（权重 CT 0.25 / 侧躯各 0.15 / 臂各 0.10 / 腿各 0.09 / HEAD 0.07），Projectile 携带 location 落地按部位结算；hull 改为底盘总余量派生视图保持 M1/M2 存量 80 例零回归；e2e「选中 → 开火 → CT 摧毁爆炸残骸」截图 3 张存 docs/assets/uat_m3/。
 
 ## M4 AI
 

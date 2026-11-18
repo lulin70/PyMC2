@@ -6,6 +6,7 @@ import math
 import random
 
 from pymc2.domain.entities.mech import TILE_SIZE_PX, Faction, FireMode, Mech, Weapon
+from pymc2.domain.entities.mech_chassis import MechLocation, make_medium_chassis
 from pymc2.domain.systems.ballistic import (
     DEFAULT_PROJECTILE_SPEED_PX_S,
     Projectile,
@@ -90,9 +91,11 @@ class BattleService:
         return None
 
     def move_mech(self, mech_id: str, x: float, y: float) -> bool:
-        """下达移动指令（移动即解除警戒姿态）。"""
+        """下达移动指令（移动即解除警戒姿态；强制关机期间被拒）。"""
         mech = self.mechs.get(mech_id)
         if mech is None or not mech.alive:
+            return False
+        if mech.heat.shutdown_active:
             return False
         mech.guarding = False
         mech.move_to(x, y)
@@ -125,7 +128,10 @@ class BattleService:
         return True
 
     def fire_at(self, attacker_id: str, target_id: str) -> bool:
-        """直射开火：校验存活/火力姿态/冷却/射程后立即判定命中，弹丸进入飞行。"""
+        """直射开火：校验存活/火力姿态/强制关机/武器可用/冷却/射程后判定命中。
+
+        命中部位在开火瞬间按权重随机判定并随弹丸携带；开火成功即产热。
+        """
         attacker = self.mechs.get(attacker_id)
         target = self.mechs.get(target_id)
         if attacker is None or target is None:
@@ -133,6 +139,10 @@ class BattleService:
         if not attacker.alive or not target.alive:
             return False
         if attacker.fire_mode is FireMode.HOLD:
+            return False
+        if attacker.heat.shutdown_active:
+            return False
+        if not attacker.weapon_operational:
             return False
         if not attacker.weapon.ready:
             return False
@@ -150,10 +160,12 @@ class BattleService:
                 impact_y=result.impact_y,
                 damage=result.damage,
                 will_hit=result.hit,
+                location=result.location,
                 speed_px_s=self.projectile_speed_px_s,
             )
         )
         attacker.weapon.cd_remaining = attacker.weapon.cooldown_s
+        attacker.heat.add_heat(attacker.weapon.heat_per_shot)
         return True
 
     def nearest_enemy(self, mech: Mech) -> Mech | None:
@@ -184,7 +196,7 @@ class BattleService:
         target = self.mechs.get(projectile.target_id)
         if target is None or not target.alive or not projectile.will_hit:
             return
-        target.take_damage(projectile.damage)
+        target.apply_damage(projectile.location, projectile.damage)
 
 
 def create_m1_battle(*, rng: ShotRng | None = None) -> BattleService:
@@ -206,4 +218,32 @@ def create_m2_battle(*, rng: ShotRng | None = None) -> BattleService:
     service.add_mech(Mech("px-01", Faction.PLAYER, px1, py1, weapon=Weapon("ppc", PLAYER_WEAPON_DAMAGE, 420.0, 2.0)))
     service.add_mech(Mech("px-02", Faction.PLAYER, px2, py2, weapon=Weapon("mlaser", 15, 380.0, 1.5)))
     service.add_mech(Mech("ex-01", Faction.ENEMY, ex, ey, weapon=Weapon("mlaser", ENEMY_WEAPON_DAMAGE, 360.0, 2.5)))
+    return service
+
+
+def create_m3_battle(*, rng: ShotRng | None = None) -> BattleService:
+    """构建 M3 机甲实体战局：中型底盘（部位装甲/结构），武器挂载手臂。"""
+    service = BattleService(rng=rng)
+    px, py = _tile_center(*PLAYER_SPAWN_TILE)
+    ex, ey = _tile_center(*ENEMY_SPAWN_TILE)
+    service.add_mech(
+        Mech(
+            "px-01",
+            Faction.PLAYER,
+            px,
+            py,
+            chassis=make_medium_chassis(),
+            weapon=Weapon("ppc", PLAYER_WEAPON_DAMAGE, 420.0, 2.0, mounted_location=MechLocation.RA),
+        )
+    )
+    service.add_mech(
+        Mech(
+            "ex-01",
+            Faction.ENEMY,
+            ex,
+            ey,
+            chassis=make_medium_chassis(),
+            weapon=Weapon("mlaser", ENEMY_WEAPON_DAMAGE, 360.0, 2.5, mounted_location=MechLocation.RA),
+        )
+    )
     return service

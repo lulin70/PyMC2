@@ -38,6 +38,7 @@ _FACTION_COLORS: dict[Faction, tuple[int, int, int]] = {
     Faction.ENEMY: (210, 70, 60),
 }
 _MECH_BORDER_COLOR = (20, 24, 28)
+_WRECK_COLOR = (60, 60, 66)  # 摧毁残骸（CT/HEAD 全毁爆炸留痕）
 _SELECTION_COLOR = (250, 210, 60)
 _MOVE_MARKER_COLOR = (250, 150, 40)
 _ATTACK_MARK_COLOR = (255, 96, 64)
@@ -129,10 +130,16 @@ class Renderer:
         sx, sy = self.world_to_screen(mech.x, mech.y, cam_x, cam_y)
         half = _MECH_SIZE_PX // 2
         rect = pygame.Rect(sx - half, sy - half, _MECH_SIZE_PX, _MECH_SIZE_PX)
-        pygame.draw.rect(self.screen, _FACTION_COLORS[mech.faction], rect)
-        pygame.draw.rect(self.screen, _MECH_BORDER_COLOR, rect, 2)
-        if selected:
-            pygame.draw.rect(self.screen, _SELECTION_COLOR, rect.inflate(8, 8), 2)
+        if mech.alive:
+            pygame.draw.rect(self.screen, _FACTION_COLORS[mech.faction], rect)
+            pygame.draw.rect(self.screen, _MECH_BORDER_COLOR, rect, 2)
+            if selected:
+                pygame.draw.rect(self.screen, _SELECTION_COLOR, rect.inflate(8, 8), 2)
+        else:
+            # 摧毁残骸：深灰块 + 交叉裂纹（机甲全毁爆炸的几何表现）。
+            pygame.draw.rect(self.screen, _WRECK_COLOR, rect)
+            pygame.draw.line(self.screen, _MECH_BORDER_COLOR, rect.topleft, rect.bottomright, 2)
+            pygame.draw.line(self.screen, _MECH_BORDER_COLOR, rect.bottomleft, rect.topright, 2)
         self._draw_health_bar(mech, sx, sy - half - 10)
         self._draw_label(mech.id, sx, sy - half - 26)
 
@@ -172,18 +179,22 @@ class Renderer:
         pygame.draw.rect(self.screen, _SELECTION_COLOR, pygame.Rect(sx0, sy0, sx1 - sx0, sy1 - sy0), 1)
 
     def _draw_hud(self, service: BattleService) -> None:
-        """底部状态行：主选中机甲火力姿态（含警戒）与选中列表。"""
+        """底部状态行：主选中机甲火力姿态（含警戒/关机）、热量与选中列表。"""
         if self._font is None:
             return
         primary = service.selected
         if primary is None:
             stance = "-"
+            heat_text = ""
         else:
             stance = primary.fire_mode.value.upper()
             if primary.guarding:
                 stance += "+GUARD"
+            heat_text = f" | HEAT: {primary.heat.heat:.0f}"
+            if primary.heat.shutdown_active:
+                heat_text += " [SHUTDOWN]"
         names = ",".join(service.selected_ids) if service.selected_ids else "-"
-        line = self._font.render(f"FIRE: {stance} | SEL: {names}", True, _LABEL_COLOR)
+        line = self._font.render(f"FIRE: {stance} | SEL: {names}{heat_text}", True, _LABEL_COLOR)
         self.screen.blit(line, (8, self.screen.get_height() - 20))
 
     def _draw_projectile(self, projectile: Projectile, cam_x: float, cam_y: float) -> None:

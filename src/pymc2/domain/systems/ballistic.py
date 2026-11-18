@@ -13,6 +13,7 @@ from dataclasses import dataclass
 from typing import Protocol
 
 from pymc2.domain.entities.mech import Mech
+from pymc2.domain.entities.mech_chassis import MechLocation, roll_location
 
 HIT_FALLOFF = 0.75
 MIN_SCATTER_PX = 8.0
@@ -30,17 +31,21 @@ class ShotRng(Protocol):
 
 @dataclass(frozen=True)
 class ShotResult:
-    """一次开火的判定结果：是否命中、伤害与弹着点。"""
+    """一次开火的判定结果：是否命中、伤害、弹着点与命中部位。"""
 
     hit: bool
     damage: int
     impact_x: float
     impact_y: float
+    location: MechLocation  # 命中部位；未命中无部位语义（恒 CT 占位）
 
 
 @dataclass
 class Projectile:
-    """飞行中的直射弹丸：直线飞向弹着点，到达后返回 True 由服务层结算。"""
+    """飞行中的直射弹丸：直线飞向弹着点，到达后返回 True 由服务层结算。
+
+    location 为开火瞬间判定的命中部位，弹丸到达后按部位结算伤害。
+    """
 
     attacker_id: str
     target_id: str
@@ -50,6 +55,7 @@ class Projectile:
     impact_y: float
     damage: int
     will_hit: bool
+    location: MechLocation = MechLocation.CT
     speed_px_s: float = DEFAULT_PROJECTILE_SPEED_PX_S
 
     def advance(self, dt: float) -> bool:
@@ -76,10 +82,11 @@ def hit_probability(distance_px: float, weapon_range_px: float) -> float:
 
 
 def resolve_shot(attacker: Mech, target: Mech, rng: ShotRng) -> ShotResult:
-    """结算一次直射开火：判定命中，命中取目标当前位置，未命中散布偏移。"""
+    """结算一次直射开火：命中率乘热量精度惩罚，命中部位按权重随机。"""
     distance = math.hypot(target.x - attacker.x, target.y - attacker.y)
-    if rng.random() < hit_probability(distance, attacker.weapon.range_px):
-        return ShotResult(True, attacker.weapon.damage, target.x, target.y)
+    probability = hit_probability(distance, attacker.weapon.range_px) * attacker.heat.accuracy_multiplier
+    if rng.random() < probability:
+        return ShotResult(True, attacker.weapon.damage, target.x, target.y, roll_location(rng))
     angle = rng.uniform(0.0, math.tau)
     radius = rng.uniform(MIN_SCATTER_PX, MAX_SCATTER_PX)
     return ShotResult(
@@ -87,4 +94,5 @@ def resolve_shot(attacker: Mech, target: Mech, rng: ShotRng) -> ShotResult:
         damage=0,
         impact_x=target.x + math.cos(angle) * radius,
         impact_y=target.y + math.sin(angle) * radius,
+        location=MechLocation.CT,
     )
