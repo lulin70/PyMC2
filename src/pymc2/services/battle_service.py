@@ -1,20 +1,31 @@
-"""战斗编排服务：移动/开火/停止/火力姿态指令与逐帧推进（M1+M2）。"""
+"""战斗编排服务：移动/开火/停止/火力姿态指令与逐帧推进（M1+M2）。
+
+M7 自动交战（用户反馈：开火自动化）：注入 dispatcher 后，tick 内对每个存活、
+FireMode.FREE 的机甲自动锁定射程内最近敌机甲，构造 TacticalOrder（origin=SELF）
+经 OrderDispatcher 下发，与玩家/指挥官指令同源同路径；显式指定目标（attack_target_id
+仍有效）优先，HOLD 火力纪律不自动锁定。未注入 dispatcher 时行为与存量完全一致。
+"""
 
 from __future__ import annotations
 
 import math
 import random
 from collections.abc import Callable
+from typing import TYPE_CHECKING
 
 from pymc2.domain.entities.mech import TILE_SIZE_PX, Faction, FireMode, Mech, Weapon
 from pymc2.domain.entities.mech_chassis import MechLocation, make_medium_chassis
 from pymc2.domain.entities.pilot import Pilot
+from pymc2.domain.orders.tactical_order import OrderOrigin, OrderType, TacticalOrder
 from pymc2.domain.systems.ballistic import (
     DEFAULT_PROJECTILE_SPEED_PX_S,
     Projectile,
     ShotRng,
     resolve_shot,
 )
+
+if TYPE_CHECKING:
+    from pymc2.services.order_dispatcher import OrderDispatcher
 
 SELECT_HALF_PX = 16.0
 
@@ -46,6 +57,9 @@ class BattleService:
         # M6 任务脚本钩子：每帧 tick 末尾回调（None = 不启用，M1-M5 存量零影响）。
         # 返回值声明为 object 以兼容带返回值的回调（如 ScriptEngine.tick 返回触发 id 列表）。
         self.tick_hook: Callable[[BattleService], object] | None = None
+        # M7 自动交战：注入 dispatcher 后 FREE 机甲自动锁定射程内最近敌机甲
+        # （None = 关闭，存量测试/直构战局零影响）。
+        self.dispatcher: OrderDispatcher | None = None
 
     def add_mech(self, mech: Mech) -> None:
         self.mechs[mech.id] = mech
@@ -189,9 +203,10 @@ class BattleService:
         return best
 
     def tick(self, dt: float) -> None:
-        """推进一帧：单位移动与冷却、弹道飞行、到达结算伤害、脚本触发器评估。"""
+        """推进一帧：单位移动与冷却、自动交战锁定、弹道飞行、到达结算伤害、脚本触发器评估。"""
         for mech in self.mechs.values():
             mech.tick(dt)
+        self._auto_engage()
         still_flying: list[Projectile] = []
         for projectile in self.projectiles:
             if projectile.advance(dt):
@@ -201,6 +216,61 @@ class BattleService:
         self.projectiles = still_flying
         if self.tick_hook is not None:
             self.tick_hook(self)
+
+    def _auto_engage(self) -> None:
+        """自动交战（M7）：FREE 机甲对射程内最近敌机甲自动锁定并开火。
+
+        - 显式目标（attack_target_id 仍有效）优先：SELF 只在无有效目标时接管，
+          不覆盖玩家/指挥官已指定的目标；
+        - 目标死亡/出射程 → 清除锁定，随后 tick 自动重锁；
+        - HOLD（火力纪律语义）不自动锁定；
+        - 仅在武器就绪/可用且非强制关机时下发 SELF 源 ATTACK_OBJECT（经 dispatcher
+          与玩家/指挥官同路径），冷却/关机期间不下发以免指令日志刷屏。
+        """
+        if self.dispatcher is None:
+            return
+        for mech in self.mechs.values():
+            if not mech.alive or mech.fire_mode is not FireMode.FREE:
+                continue
+            target = self._engagement_target(mech)
+            if target is None:
+                continue
+            if mech.weapon.ready and mech.weapon_operational and not mech.heat.shutdown_active:
+                self.dispatcher.dispatch(
+                    TacticalOrder(
+                        order_type=OrderType.ATTACK_OBJECT,
+                        unit_ids=(mech.id,),
+                        origin=OrderOrigin.SELF,
+                        target_tile=None,
+                        target_unit_id=target.id,
+                    ),
+                    self,
+                )
+
+    def _engagement_target(self, mech: Mech) -> Mech | None:
+        """当前交战目标：锁定仍有效则保持；失效（死亡/出射程/不存在）则清锁并重锁最近射程内敌。"""
+        locked = self.mechs.get(mech.attack_target_id) if mech.attack_target_id is not None else None
+        if locked is not None and locked.alive and self._in_weapon_range(mech, locked):
+            return locked
+        mech.attack_target_id = None  # 目标失效 → 清除锁定（下个评估周期自动重锁）
+        return self._nearest_enemy_in_range(mech)
+
+    def _nearest_enemy_in_range(self, mech: Mech) -> Mech | None:
+        """射程内最近存活敌机甲（无则 None）；与 nearest_enemy 的区别在于按武器射程过滤。"""
+        best: Mech | None = None
+        best_dist = float("inf")
+        for other in self.mechs.values():
+            if other.faction is mech.faction or not other.alive:
+                continue
+            dist = math.hypot(other.x - mech.x, other.y - mech.y)
+            if dist <= mech.weapon.range_px and dist < best_dist:
+                best, best_dist = other, dist
+        return best
+
+    @staticmethod
+    def _in_weapon_range(attacker: Mech, target: Mech) -> bool:
+        """射程判定复用 fire_at 同款口径（欧氏距离 ≤ 武器射程）。"""
+        return math.hypot(target.x - attacker.x, target.y - attacker.y) <= attacker.weapon.range_px
 
     def _resolve_impact(self, projectile: Projectile) -> None:
         target = self.mechs.get(projectile.target_id)

@@ -61,3 +61,26 @@
   格子尺寸缩放绘制（血条/选中框/HUD 仍程序化），root 无效/无 Data/未命中一律优雅降级，
   未加载时渲染输出与现状逐像素一致（集成测试全图字节比对）。许可红线：真实资产仅本机学习
   加载，零入库、不再分发；测试 fixture 为 PIL 现场生成 TGA。
+
+## 交付后注记（2026-11-18）：开火自动化 + MC2 资产免配置（用户反馈修补）
+
+- **自动交战**（用户反馈：开火应自动，不要右键点敌人）：
+  BattleService.tick 内新增自动交战步骤（冷却推进后、弹丸推进前）：对每个存活、
+  FireMode.FREE 的机甲——attack_target_id 仍有效（存活且在射程内，口径同 fire_at）则保持；
+  否则清锁并重锁射程内最近敌机甲，构造 TacticalOrder（order_type=ATTACK_OBJECT、
+  origin=SELF）经 dispatcher 下发，与玩家/指挥官指令同源同路径。优先级语义：
+  **显式指定目标（玩家/指挥官）优先，SELF 只在无有效目标时接管、不覆盖**；
+  **HOLD 火力纪律不自动锁定**；目标死亡/出射程 → 清除锁定，下个评估周期自动重锁。
+  仅在武器就绪/可用且非强制关机时下发，防指令日志刷屏；未注入 dispatcher 的直构战局
+  行为与存量完全一致（dispatcher 由 main.create_game 接线，交互与 demo 模式均生效）。
+  右键语义简化：一律 MOVE_TO_POINT（点到敌方机甲也移动过去，攻击交给自动交战）。
+  验收：单测 7 例（FREE 锁最近/超射程不锁/HOLD 不锁/显式目标优先/死亡重锁/出射程清锁/
+  未接线零行为）+ 集成 1 例（敌入射程 → 自动开火 → 掉血，日志全 SELF 源）+ e2e 交互链路
+  改写（右键敌机甲=移动、自动交战击毁断言），截图 4 张存 docs/assets/uat_interactive/。
+- **MC2 资产默认自动发现**（用户反馈：路径门槛是自己设的，去掉）：
+  mc2_assets 新增 default_pack_root()：env `PYMC2_MC2_ASSETS` → `~/.pymc2/mc2-assets`
+  （存在才用）→ None，其余不做；main() 交互与 demo 模式均自动尝试，`--mc2-assets`
+  显式路径优先；加载成功打印 `[PyMC2] MC2 资产已加载：<root>（<N> 张，机甲精灵已启用）`，
+  失败维持降级提示、无候选静默。缓存目录若为 git 仓库（含 .git）无碍——load 仅扫
+  Data/TGL、Data/Art 三个子目录。验收：default_pack_root 三级探测 + main 接线
+  （显式优先/自动发现/降级/静默）共 9 例，HOME/env 全程 monkeypatch，不读真实资产仓库。

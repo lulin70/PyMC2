@@ -59,12 +59,19 @@ def run_until[T](game: main_module.Game, predicate: Callable[[], T], max_frames:
 
 @pytest.fixture()
 def game() -> Iterator[main_module.Game]:
-    """dummy 驱动下的完整 M4 战局（AI 指挥官，固定随机源，决策间隔 30 帧）。"""
+    """dummy 驱动下的完整 M4 战局（AI 指挥官，固定随机源，决策间隔 30 帧）。
+
+    本切片编排玩家全程静置、由脚本伤害触发后撤场景——解除自动交战接线
+    （battle.dispatcher 置 None）以保持 M4 验收语义；自动交战行为由
+    interactive/m1-m3 uat 与 test_auto_engage 单测覆盖。
+    """
     pygame.init()
     screen = pygame.display.set_mode((WINDOW_WIDTH_PX, WINDOW_HEIGHT_PX))
     commander = AiCommander(Faction.ENEMY)
     service: BattleService = create_m4_battle(rng=StaticRng(0.0))
-    yield main_module.create_game(screen, service=service, commander=commander)
+    game = main_module.create_game(screen, service=service, commander=commander)
+    service.dispatcher = None  # M4 编排依赖玩家静置不还击（脚本伤害驱动后撤场景）
+    yield game
     pygame.quit()
 
 

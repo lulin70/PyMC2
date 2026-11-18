@@ -2,7 +2,9 @@
 
 覆盖：load 优雅降级（root 缺失 / 无 Data / 零命中）、三目录扫描与 256 优先、
 大小写不敏感（stem 与扩展名）、resolve 匹配链（精确 → 包含 → None）、模板映射
-（px-01→madcat / px-02→thor / ex→urbanmech / px 前缀回退）、缩放缓存。
+（px-01→madcat / px-02→thor / ex→urbanmech / px 前缀回退）、缩放缓存、
+default_pack_root 三级探测（env → 缓存目录 → None，HOME/env 全程 monkeypatch，
+不读本机真实资产仓库）。
 """
 
 from __future__ import annotations
@@ -14,7 +16,7 @@ import pygame
 import pytest
 from PIL import Image
 
-from pymc2.infrastructure.mc2_assets import MC2AssetPack
+from pymc2.infrastructure.mc2_assets import ASSETS_ENV_VAR, MC2AssetPack, default_pack_root
 
 SIZE_PX = (32, 32)
 MADCAT_COLOR = (200, 40, 40, 255)
@@ -139,3 +141,35 @@ class TestScaledCache:
     def test_scaled_miss_returns_none(self, pack_root: Path) -> None:
         pack = MC2AssetPack.load(pack_root)
         assert pack.scaled_mech_sprite("zz-09", 16) is None
+
+
+class TestDefaultPackRoot:
+    """默认根探测三级：env 覆盖 → ~/.pymc2/mc2-assets（存在才用）→ None。"""
+
+    def test_env_var_wins_over_cache_dir(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+        env_root = tmp_path / "env-root"
+        env_root.mkdir()
+        home = tmp_path / "home"
+        (home / ".pymc2" / "mc2-assets").mkdir(parents=True)
+        monkeypatch.setenv(ASSETS_ENV_VAR, str(env_root))
+        monkeypatch.setenv("HOME", str(home))
+        assert default_pack_root() == env_root
+
+    def test_home_cache_dir_used_when_env_unset(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+        monkeypatch.delenv(ASSETS_ENV_VAR, raising=False)
+        home = tmp_path / "home"
+        cache = home / ".pymc2" / "mc2-assets"
+        cache.mkdir(parents=True)
+        monkeypatch.setenv("HOME", str(home))
+        assert default_pack_root() == cache
+
+    def test_env_var_returned_even_if_missing(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+        """env 为显式覆盖：目录尚不存在也原样返回（失败由 load 降级提示呈现）。"""
+        monkeypatch.setenv(ASSETS_ENV_VAR, str(tmp_path / "not-yet-created"))
+        monkeypatch.setenv("HOME", str(tmp_path / "home"))
+        assert default_pack_root() == tmp_path / "not-yet-created"
+
+    def test_returns_none_when_no_candidate(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+        monkeypatch.delenv(ASSETS_ENV_VAR, raising=False)
+        monkeypatch.setenv("HOME", str(tmp_path / "empty-home"))
+        assert default_pack_root() is None

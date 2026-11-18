@@ -1,7 +1,9 @@
-"""M2 全链路 e2e：框选两台 → 右键移动 → F 切火力姿态 → 开火 → 掉血。
+"""M2 全链路 e2e：框选两台 → 右键移动 → F 切火力姿态 → 自动交战 → 击毁。
 
 ROADMAP M2 验收：指令层点击链路截图留痕，存 docs/assets/uat_m2/。
 dummy 视频驱动 + pygame.event.post 模拟真实输入（与 M1 uat 同模式）。
+注：M7 起开火由自动交战接管（射程内自动锁定开火，origin=SELF），右键一律
+MOVE_TO_POINT（点到敌方机甲也移动过去），存量「右键敌机甲开火」步骤改写。
 """
 
 from __future__ import annotations
@@ -14,6 +16,7 @@ import pytest
 
 import pymc2.main as main_module
 from pymc2.domain.entities.mech import FireMode
+from pymc2.domain.orders.tactical_order import OrderOrigin, OrderType
 from pymc2.presentation.renderer import WINDOW_HEIGHT_PX, WINDOW_WIDTH_PX
 from pymc2.services.battle_service import BattleService, create_m2_battle
 
@@ -116,23 +119,26 @@ def test_m2_full_chain_box_select_group_move_fire_mode_and_attack(game: main_mod
     assert player_a.fire_mode is FireMode.FREE
     assert player_b.fire_mode is FireMode.FREE
 
-    # --- 步骤 4：右键敌机甲 → ATTACK_OBJECT → 双弹丸飞行（含攻击目标高亮）---
+    # --- 步骤 4：右键敌方机甲（已被自动交战击毁）→ MOVE_TO_POINT（新语义：右键不再攻击）---
     post_mouse_down(592, 336, button=3)
     post_mouse_up(592, 336, button=3)
     main_module.run_frame(game, 1 / 60)
-    assert len(game.service.projectiles) == 2
-    assert player_a.attack_target_id == "ex-01"
-    assert player_b.attack_target_id == "ex-01"
-    saved.append(save_screenshot(game.screen, "04_attack_order.png"))
+    assert player_a.move_target == (592.0, 336.0)  # tile(18,10) 中心
+    assert player_b.move_target == (592.0, 336.0)
+    assert not any(
+        o.origin is OrderOrigin.PLAYER and o.order_type is OrderType.ATTACK_OBJECT for o in game.dispatcher.order_log
+    )
+    saved.append(save_screenshot(game.screen, "04_auto_engagement.png"))
 
-    # --- 步骤 5：弹丸落地 → 掉血（恒命中：ppc 25 + mlaser 15）---
-    for _ in range(10):
-        main_module.run_frame(game, 0.05)
-        if not game.service.projectiles:
-            break
-    assert not game.service.projectiles
-    assert enemy.hull == 60
-    saved.append(save_screenshot(game.screen, "05_impact.png"))
+    # --- 步骤 5：自动交战击毁验收——零玩家攻击指令，敌机甲阵亡、锁定清除 ---
+    assert not enemy.alive
+    assert enemy.hull == 60  # 首轮齐射即击毁：15（t≈0.68 破 CT 装甲）+ 25（t≈0.82 CT 结构击穿 → 全毁）
+    assert player_a.attack_target_id is None
+    assert player_b.attack_target_id is None
+    assert any(
+        o.origin is OrderOrigin.SELF and o.order_type is OrderType.ATTACK_OBJECT for o in game.dispatcher.order_log
+    )
+    saved.append(save_screenshot(game.screen, "05_enemy_destroyed.png"))
 
     # --- 验收留痕：≥4 张截图全部落盘 ---
     assert len(saved) >= 4

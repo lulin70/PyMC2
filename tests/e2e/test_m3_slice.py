@@ -1,7 +1,8 @@
-"""M3 全链路 e2e：选中 → 开火 → 弹着部位伤害 → CT 摧毁爆炸（残骸），截图留痕。
+"""M3 全链路 e2e：选中 → 自动交战开火 → 弹着部位伤害 → CT 摧毁爆炸（残骸），截图留痕。
 
 ROADMAP M3 验收：一场小战斗打到一台机甲 CT 摧毁，截图 ≥3 张存 docs/assets/uat_m3/。
 dummy 视频驱动 + pygame.event.post 模拟真实输入（与 M1/M2 uat 同模式）。
+注：M7 起开火由自动交战接管（射程内自动锁定，origin=SELF），无需右键攻击指令。
 """
 
 from __future__ import annotations
@@ -14,6 +15,7 @@ import pytest
 
 import pymc2.main as main_module
 from pymc2.domain.entities.mech_chassis import MechLocation
+from pymc2.domain.orders.tactical_order import OrderOrigin, OrderType
 from pymc2.presentation.renderer import _WRECK_COLOR, WINDOW_HEIGHT_PX, WINDOW_WIDTH_PX
 from pymc2.services.battle_service import BattleService, create_m3_battle
 
@@ -73,11 +75,12 @@ def test_m3_full_chain_selected_fired_ct_destroyed(game: main_module.Game) -> No
     assert game.service.selected_id == "px-01"
     saved.append(save_screenshot(game.screen, "01_selected.png"))
 
-    # --- 步骤 2：右键敌机甲开火 → 弹丸飞行（部位命中在开火瞬间判定为 CT）---
-    hull_before = enemy.hull
-    post_click(592, 336, button=3)
-    main_module.run_frame(game, 1 / 60)
-    assert len(game.service.projectiles) == 1
+    # --- 步骤 2：射程内自动交战（零输入）→ 弹丸飞行，部位命中在开火瞬间判定为 CT ---
+    assert any(
+        o.origin is OrderOrigin.SELF and o.order_type is OrderType.ATTACK_OBJECT for o in game.dispatcher.order_log
+    )
+    assert player.attack_target_id == "ex-01"
+    assert len(game.service.projectiles) == 1  # 敌武器射程 360 < 384px，尚无还击
     assert game.service.projectiles[0].location is MechLocation.CT
     assert player.heat.heat == pytest.approx(5.0, abs=0.05)  # 开火产热（HUD 可见）
     saved.append(save_screenshot(game.screen, "02_projectile_in_flight.png"))
@@ -91,7 +94,7 @@ def test_m3_full_chain_selected_fired_ct_destroyed(game: main_module.Game) -> No
     assert enemy.chassis.is_destroyed(MechLocation.CT) is True
     assert enemy.chassis.destroyed_locations == frozenset({MechLocation.CT})
     assert enemy.alive is False
-    assert enemy.hull == hull_before - 25  # 总量精确扣减（CT 21 + 溢出 4 → LT 装甲）
+    assert enemy.hull == 56  # 中型底盘总余量 81，精确扣减 25（CT 21 + 溢出 4 → LT 装甲）
     assert game.screen.get_at((588, 330))[:3] == _WRECK_COLOR  # 爆炸残骸色块（避开 X 裂纹线）
     saved.append(save_screenshot(game.screen, "03_ct_destroyed_wreck.png"))
 

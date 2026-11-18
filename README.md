@@ -36,19 +36,22 @@ src/pymc2/
 ## 运行
 
 ```
-python src/pymc2/main.py                        # 默认：交互模式（真人可玩）
+python src/pymc2/main.py                        # 默认：交互模式（真人可玩，MC2 资产自动发现）
 python src/pymc2/main.py --demo                 # 双侧 AI 自动演示（M5 任务链 + 结算/整备摘要）
-python src/pymc2/main.py --mc2-assets <本地路径>  # 交互模式 + 加载本地 MC2 Shared Source 资产
+python src/pymc2/main.py --mc2-assets <本地路径>  # 显式指定资产路径（覆盖自动发现）
 ```
 
-- **交互模式（默认）**：玩家手操己方机甲——左键拖拽框选 / 单击选中，右键地面移动、右键敌机甲开火，
-  F 键循环火力姿态（FREE/HOLD，HUD 状态行可见）；指令以 TacticalOrder（origin=PLAYER）经
-  OrderDispatcher 下发，与 AI 同源同路径。敌方保留 AiCommander goal 分解（后撤/集火/占区）。
-  玩家侧不挂指挥官，AI 决策只作用于敌方；战役链（任务脚本/结算/整备摘要）两模式共用。
+- **交互模式（默认）**：玩家手操己方机甲——左键拖拽框选 / 单击选中，右键移动（点到敌方
+  机甲同样移动过去），F 键循环火力姿态（FREE/HOLD，HUD 状态行可见）；开火由**自动交战**
+  接管：FREE 姿态机甲对射程内最近敌机甲自动锁定开火（origin=SELF 经 OrderDispatcher
+  下发，与玩家/指挥官同源同路径；显式指定的目标优先、HOLD 火力纪律不自动开火）。
+  敌方保留 AiCommander goal 分解（后撤/集火/占区）。玩家侧不挂指挥官，AI 决策只作用于
+  敌方；战役链（任务脚本/结算/整备摘要）两模式共用。
 - **演示模式（`--demo`）**：玩家侧也由 AiCommander 指挥，双侧 AI 自动攻防（原 main 行为）。
-- **`--mc2-assets <路径>`**：指向本机自有 MechCommander 2 Shared Source checkout（含 `Data/` 目录）。
-  加载 `Data/TGL/{256,128}/*.tga` 与 `Data/Art/*.tga` 建精灵索引；机甲命中精灵时按格子尺寸缩放绘制
-  （血条/选中框/HUD 仍程序化），未命中或路径无效时自动降级程序化色块，渲染行为不变。
+- **MC2 资产自动发现**：默认按 `PYMC2_MC2_ASSETS` 环境变量 → `~/.pymc2/mc2-assets` 缓存目录
+  顺序探测；`--mc2-assets <路径>` 显式覆盖。加载 `Data/TGL/{256,128}/*.tga` 与 `Data/Art/*.tga`
+  建精灵索引；机甲命中精灵时按格子尺寸缩放绘制（血条/选中框/HUD 仍程序化），未发现或
+  路径无效时自动降级程序化色块，渲染行为不变。
   **许可红线：MC2 原版资产仅限本机学习加载，不打包进仓库、不再分发、不用于商业用途；仓库内只有测试用 PIL 自造 TGA fixture。**
 
 ## 状态
@@ -60,3 +63,4 @@ python src/pymc2/main.py --mc2-assets <本地路径>  # 交互模式 + 加载本
 - M5 战役：已交付（2026-11-18）。CampaignState（RP 账本/名册/任务指针）+ 四档序列化（Pilot to_dict/from_dict 含双计数与 kills——M4 遗留项补齐、chassis 部位余量、mech 整备快照含 max_hull、campaign 存档往返）；MissionChain 三关递进（敌方编制 1/2/3、出生位置互异、奖励 25/30/40）；SalvageService（摧毁机甲按剩余完好度 ×45 折算 RP）；RefitService（repair 半价满修 / hire 40 RP 购新机甲 / carryover 幸存者回写阵亡移除）；名册快照复制参战、结算回写携带；e2e「任务 1 真战斗 → 敌全灭结算 → repair+hire → 任务 2 开局逐台断言 pilot rank/装甲状态/新机甲在列」截图 3 张存 docs/assets/uat_m5/。整备走 service 调用 + main 文本摘要（无 GUI 整备屏）。
 - M6 脚本化：已交付（2026-11-18）。Trigger DSL（条件 tick_reached/enemy_destroyed/unit_below_hull/unit_in_region/allies_destroyed + 动作 spawn_reinforcement/victory/defeat/grant_rp/show_message，declarative dataclass、JSON 可加载）；MissionScript + ScriptEngine（PyCC2 TriggerSystem 精神：once/cooldown 门控、fire_count 可观测），经 BattleService.tick_hook 由 battle_service.tick 驱动（默认 None 零回归）；load_mission_script 错误统一 MissionScriptError（JSON 行号/缺字段/未知 kind/缺参数）；示例脚本 data/missions/m1_river_crossing.json 全 5 动作+全 5 条件；验收「示例脚本全事件覆盖（每动作均有用例执行）+ PRESERVE_FORCE 与脚本 defeat 共存 + e2e 增援→交战→RP→victory」截图 3 张存 docs/assets/uat_m6/；main() 重写为 M5+M6 自动演示（双侧 AI + 首关脚本 + 结算/整备文本摘要）。
 - 交互化修补：已交付（2026-11-18）。main() 默认改为**交互模式**（真人可玩：玩家侧不挂 AiCommander，框选/右键移动/右键开火/F 火力姿态走既有输入链路，敌方保留 AI；`--demo` 保留原双侧 AI 自动演示）；新增 `--mc2-assets` 本地 MC2 资产加载管线（infrastructure/mc2_assets.py：扫描 Data/TGL/{256,128}+Data/Art 的 TGA 按小写 stem 建索引，机甲映射 px-01→MadCat / px-02→Thor / ex→UrbanMech，匹配链 精确→包含→程序化回退，未加载/未命中渲染逐像素不变）；e2e 交互全链路「框选 → 移动到位 → 开火 → 掉血」截图 5 张存 docs/assets/uat_interactive/，资产降级路径渲染一致性集成测试通过。
+- 用户反馈修补（开火自动化 + 资产免配置）：已交付（2026-11-18）。①**自动交战**（反馈：开火应自动，不要右键点敌人）——BattleService.tick 新增自动交战步骤：FREE 姿态存活机甲对射程内最近敌机甲自动锁定，构造 TacticalOrder（origin=SELF）经 dispatcher 下发（与玩家/指挥官同路径）；显式指定目标（attack_target_id 仍有效）优先、SELF 不覆盖，目标死亡/出射程清锁下 tick 重锁，HOLD 火力纪律不自动锁定，冷却/关机/武器损毁期间不下发（防指令日志刷屏）；右键语义简化为一律 MOVE_TO_POINT；②**MC2 资产默认自动发现**（反馈：去掉路径门槛）——default_pack_root() 按 env `PYMC2_MC2_ASSETS` → `~/.pymc2/mc2-assets` 探测，`--mc2-assets` 显式路径优先，加载成功打印资产摘要、失败维持降级提示；e2e 交互链路改写为「框选 → 右键敌机甲=移动 → 自动交战击毁（零玩家攻击指令）」截图 4 张存 docs/assets/uat_interactive/，新增自动交战单测/集成测试与资产探测单测（HOME/env monkeypatch 隔离，不读真实资产仓库）。

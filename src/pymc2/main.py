@@ -3,23 +3,27 @@
 游戏循环体拆为 create_game / handle_event / run_frame，供 e2e 测试以 dummy
 驱动 + event.post 复用同一套逻辑。玩家全部战术指令以 TacticalOrder
 （origin=PLAYER）经 OrderDispatcher 下发；AiCommander 每帧经 update()
-按 N tick 间隔产出指令，与玩家指令同源同路径。
+按 N tick 间隔产出指令，与玩家指令同源同路径。自动交战（M7）：FREE 姿态机甲
+对射程内最近敌机甲自动锁定开火，由 BattleService.tick 产出 origin=SELF 指令
+经同一 dispatcher 下发（显式指定目标优先，HOLD 火力纪律不自动开火）。
 
 两种模式（命令行）：
 - 默认 = **交互模式**：真人可玩。玩家侧机甲不经 AiCommander（框选/右键移动/
-  右键攻击/F 火力姿态走既有 handle_event 输入链路，指令 origin=PLAYER 经
-  OrderDispatcher 下发），敌方保留 AiCommander goal 分解；
+  F 火力姿态走既有 handle_event 输入链路，指令 origin=PLAYER 经
+  OrderDispatcher 下发；开火交给自动交战），敌方保留 AiCommander goal 分解；
 - ``--demo`` = 双侧 AI 自动演示（原 main 行为）：玩家侧也由 AiCommander 指挥。
 
 两种模式均沿用 M5 任务链 + 首关任务脚本 + 结算/整备文本摘要。
-可选 ``--mc2-assets <本地路径>`` 加载 MechCommander 2 Shared Source 资产
-（仅限本机学习，不打包不再分发；缺省程序化绘制）。
+MC2 资产默认自动发现（env ``PYMC2_MC2_ASSETS`` → ``~/.pymc2/mc2-assets``），
+``--mc2-assets <本地路径>`` 显式覆盖；未发现/加载失败时降级程序化绘制
+（仅限本机学习，不打包不再分发）。
 """
 
 from __future__ import annotations
 
 import argparse
 import math
+import os
 import sys
 from collections.abc import Sequence
 from dataclasses import dataclass, field
@@ -34,7 +38,7 @@ from pymc2.domain.scripting.mission_script import (
     ScriptEngine,
     load_mission_script,
 )
-from pymc2.infrastructure.mc2_assets import MC2AssetPack
+from pymc2.infrastructure.mc2_assets import MC2AssetPack, default_pack_root
 from pymc2.presentation.renderer import WINDOW_HEIGHT_PX, WINDOW_WIDTH_PX, Renderer
 from pymc2.services.ai_commander import AiCommander
 from pymc2.services.battle_service import BattleService, create_m2_battle
@@ -60,7 +64,7 @@ def parse_args(argv: Sequence[str] = ()) -> argparse.Namespace:
         prog="pymc2",
         description=(
             "PyMC2 实时战术（MechCommander 2 复刻学习项目）。"
-            "默认交互模式：框选 → 右键移动 → 右键敌机甲开火 → F 火力姿态；"
+            "默认交互模式：框选 → 右键移动 → 射程内自动交战开火 → F 火力姿态；"
             "--demo 切双侧 AI 自动演示。"
         ),
     )
@@ -75,8 +79,9 @@ def parse_args(argv: Sequence[str] = ()) -> argparse.Namespace:
         default=None,
         metavar="PATH",
         help=(
-            "本地 MechCommander 2 Shared Source checkout 路径（含 Data/ 目录）；"
-            "仅限本机学习加载、不打包不再分发；缺省走程序化绘制"
+            "显式指定本地 MechCommander 2 Shared Source checkout 路径（含 Data/ 目录）；"
+            "缺省自动发现（env PYMC2_MC2_ASSETS → ~/.pymc2/mc2-assets），未发现则程序化绘制；"
+            "仅限本机学习加载、不打包不再分发"
         ),
     )
     return parser.parse_args(list(argv))
@@ -113,13 +118,35 @@ def create_game(
     commander: AiCommander | None = None,
     asset_pack: MC2AssetPack | None = None,
 ) -> Game:
-    """组装一局战斗（service/commander/asset_pack 可注入以便测试固定随机源与 AI/资产开关）。"""
-    return Game(
+    """组装一局战斗（service/commander/asset_pack 可注入以便测试固定随机源与 AI/资产开关）。
+
+    自动交战接线：service.dispatcher 指向本局 dispatcher——BattleService.tick 产出的
+    SELF 源自动交战指令与玩家/指挥官指令同源同路径（无需接线的直构战局保持关闭）。
+    """
+    game = Game(
         screen=screen,
         service=service if service is not None else create_m2_battle(),
         renderer=Renderer(screen, asset_pack=asset_pack),
         commander=commander,
     )
+    game.service.dispatcher = game.dispatcher
+    return game
+
+
+def _load_asset_pack(explicit_root: Path | None) -> MC2AssetPack | None:
+    """加载 MC2 资产包：``--mc2-assets`` 显式路径优先，否则自动发现（env → ~/.pymc2）。
+
+    加载成功打印摘要；候选无效/零命中维持降级提示；完全无候选则静默（程序化绘制）。
+    """
+    root = explicit_root if explicit_root is not None else default_pack_root()
+    if root is None:
+        return None
+    asset_pack = MC2AssetPack.load(root)
+    if asset_pack is not None:
+        print(f"[PyMC2] MC2 资产已加载：{root}（{asset_pack.tga_count} 张，机甲精灵已启用）")
+    else:
+        print(f"[PyMC2] {root} 下未找到有效 Data/TGL 或 Data/Art 资产，降级程序化绘制")
+    return asset_pack
 
 
 def _clamp(value: float, low: float, high: float) -> float:
@@ -157,28 +184,22 @@ def _finish_selection_drag(game: Game, end_pos: tuple[float, float]) -> None:
 
 
 def _issue_context_order(game: Game, world: tuple[float, float]) -> None:
-    """右键：点中敌方单位 → ATTACK_OBJECT；否则 → MOVE_TO_POINT（tile 中心）。"""
+    """右键：一律 MOVE_TO_POINT（tile 中心）。
+
+    点中敌方机甲同样移动过去——开火交给自动交战（射程内自动锁定），右键不再承担
+    攻击语义（用户反馈：开火应自动，不要右键点敌人）。
+    """
     unit_ids = tuple(game.service.selected_ids)
     if not unit_ids:
         return
-    enemy = game.service.unit_at(world[0], world[1], faction=Faction.ENEMY)
-    if enemy is not None:
-        order = TacticalOrder(
-            order_type=OrderType.ATTACK_OBJECT,
-            unit_ids=unit_ids,
-            origin=OrderOrigin.PLAYER,
-            target_tile=None,
-            target_unit_id=enemy.id,
-        )
-    else:
-        tile = (int(world[0]) // TILE_SIZE_PX, int(world[1]) // TILE_SIZE_PX)
-        order = TacticalOrder(
-            order_type=OrderType.MOVE_TO_POINT,
-            unit_ids=unit_ids,
-            origin=OrderOrigin.PLAYER,
-            target_tile=tile,
-            target_unit_id=None,
-        )
+    tile = (int(world[0]) // TILE_SIZE_PX, int(world[1]) // TILE_SIZE_PX)
+    order = TacticalOrder(
+        order_type=OrderType.MOVE_TO_POINT,
+        unit_ids=unit_ids,
+        origin=OrderOrigin.PLAYER,
+        target_tile=tile,
+        target_unit_id=None,
+    )
     game.dispatcher.dispatch(order, game.service)
 
 
@@ -199,7 +220,22 @@ def _cycle_fire_mode(game: Game) -> None:
 
 
 def handle_event(game: Game, event: pygame.event.Event) -> None:
-    """处理单个输入事件（世界坐标 = 屏幕坐标 + 相机偏移）。"""
+    """处理单个输入事件（世界坐标 = 屏幕坐标 + 相机偏移）。
+
+    ``PYMC2_INPUT_DEBUG=1`` 时向 stdout 回显全部输入事件与下发的指令，
+    用于诊断真机输入链路（事件未到达 vs 指令下发失败）。
+    """
+    debug = os.environ.get("PYMC2_INPUT_DEBUG") == "1"
+    if debug and event.type in (
+        pygame.MOUSEBUTTONDOWN,
+        pygame.MOUSEBUTTONUP,
+        pygame.KEYDOWN,
+    ):
+        print(
+            f"[input] type={event.type} pos={getattr(event, 'pos', None)} "
+            f"key={getattr(event, 'key', None)} button={getattr(event, 'button', None)}",
+            flush=True,
+        )
     if event.type == pygame.QUIT:
         game.running = False
         return
@@ -265,11 +301,7 @@ def _run_refit_phase(state: CampaignState, refit: RefitService) -> None:
 def main(argv: Sequence[str] = ()) -> int:
     """默认交互模式：玩家手操己方机甲 vs 敌方 AI 指挥官；``--demo`` 切双侧 AI 自动演示。"""
     args = parse_args(argv)
-    asset_pack: MC2AssetPack | None = None
-    if args.mc2_assets is not None:
-        asset_pack = MC2AssetPack.load(args.mc2_assets)
-        if asset_pack is None:
-            print(f"[PyMC2] {args.mc2_assets} 下未找到有效 Data/TGL 或 Data/Art 资产，降级程序化绘制")
+    asset_pack = _load_asset_pack(args.mc2_assets)
     pygame.init()
     try:
         screen = pygame.display.set_mode((WINDOW_WIDTH_PX, WINDOW_HEIGHT_PX))

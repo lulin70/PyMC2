@@ -14,10 +14,16 @@
 （"awesome" 命中 "awesome1"、"madcat" 命中 "mcl_mc_madcat_a"，大小写不敏感）→ None
 （渲染层回退程序化色块）。root 不存在 / 无 Data 目录 / 扫描零命中 → ``load`` 返回 None，
 调用方优雅降级，渲染输出与未加载状态完全一致。
+
+默认根目录（用户反馈：去掉路径门槛）：``default_pack_root()`` 按
+env ``PYMC2_MC2_ASSETS`` → ``~/.pymc2/mc2-assets`` 顺序探测候选（其余不做），
+存在且 ``load`` 非 None 即用。缓存目录若为 git 仓库（含 .git）无碍——load 只扫
+Data/TGL、Data/Art 三个子目录，仓库根的 .git 等元数据不进入扫描。
 """
 
 from __future__ import annotations
 
+import os
 import re
 from pathlib import Path
 
@@ -29,6 +35,10 @@ SPRITE_DIR_256 = Path("TGL/256")
 SPRITE_DIR_128 = Path("TGL/128")
 ART_DIR = Path("Art")
 
+# 默认资产根探测：环境变量优先，其次本机缓存目录（稀疏 checkout 由用户自行放置）。
+ASSETS_ENV_VAR = "PYMC2_MC2_ASSETS"
+CACHE_ASSETS_SUBPATH = Path(".pymc2") / "mc2-assets"
+
 # 项目机甲模板 → MC2 精灵名（小写 stem，可调）：渲染层以 mech.id 作为 chassis_kind 查询。
 # 未登记的 id 先剥尾部编号回退模板前缀（px-03 → px），仍无命中则按原样进匹配链。
 CHASSIS_SPRITE_NAMES: dict[str, str] = {
@@ -39,6 +49,22 @@ CHASSIS_SPRITE_NAMES: dict[str, str] = {
 }
 
 _ID_SUFFIX_RE = re.compile(r"-?\d+$")
+
+
+def default_pack_root() -> Path | None:
+    """默认 MC2 资产根目录探测：env ``PYMC2_MC2_ASSETS`` → ``~/.pymc2/mc2-assets`` → None。
+
+    仅做候选探测、不做加载：调用方以 ``MC2AssetPack.load`` 验证（None 即降级程序化绘制）。
+    env 值为显式覆盖（即使目录尚不存在也原样返回，失败由 load 的降级提示呈现）；
+    缓存目录须实际存在。
+    """
+    env_root = os.environ.get(ASSETS_ENV_VAR)
+    if env_root:
+        return Path(env_root)
+    cache_root = Path.home() / CACHE_ASSETS_SUBPATH
+    if cache_root.is_dir():
+        return cache_root
+    return None
 
 
 def _sprite_name_candidates(chassis_kind: str) -> tuple[str, ...]:

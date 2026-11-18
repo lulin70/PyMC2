@@ -1,9 +1,11 @@
-"""BattleService 集成测试：move → tick → 到位；fire → tick → 掉血。"""
+"""BattleService 集成测试：move → tick → 到位；fire → tick → 掉血；自动交战全链路。"""
 
 from __future__ import annotations
 
 from pymc2.domain.entities.mech import Faction, Mech, Weapon
+from pymc2.domain.orders.tactical_order import OrderOrigin, OrderType
 from pymc2.services.battle_service import BattleService, create_m1_battle
+from pymc2.services.order_dispatcher import OrderDispatcher
 
 
 class StaticRng:
@@ -126,3 +128,50 @@ class TestFiring:
 
     def test_tick_on_empty_battle_is_safe(self) -> None:
         BattleService().tick(0.016)
+
+
+class TestAutoEngagement:
+    """自动交战全链路：敌方进入射程 → 自动锁定开火 → 掉血，全程零玩家攻击指令。"""
+
+    def test_enemy_entering_range_triggers_auto_fire_and_damage(self) -> None:
+        battle = BattleService(rng=StaticRng(0.0))
+        dispatcher = OrderDispatcher()
+        battle.dispatcher = dispatcher
+        battle.add_mech(Mech("px-01", Faction.PLAYER, 200.0, 200.0, weapon=Weapon("ppc", 25, 300.0, 2.0)))
+        enemy = Mech("ex-01", Faction.ENEMY, 700.0, 200.0, weapon=Weapon("mlaser", 15, 300.0, 2.5))
+        battle.add_mech(enemy)
+
+        # 起始 500px > 射程 300px：不开火、不锁定
+        battle.tick(0.25)
+        assert not battle.projectiles
+        player = battle.get("px-01")
+        assert player is not None
+        assert player.attack_target_id is None
+
+        # 玩家仅下达移动指令（服务层直调，非 dispatcher 攻击指令）→ 进入射程后自动开火
+        assert battle.move_mech("px-01", 700.0, 200.0) is True
+        fired = False
+        for _ in range(20):
+            battle.tick(0.25)
+            if battle.projectiles:
+                fired = True
+                break
+        assert fired, "敌机甲进入射程后应自动开火"
+        assert any(p.attacker_id == "px-01" for p in battle.projectiles)
+        player_self_orders = [
+            order for order in dispatcher.order_log if order.origin is OrderOrigin.SELF and order.unit_ids == ("px-01",)
+        ]
+        assert player_self_orders, "自动交战指令应入日志"
+        assert player_self_orders[-1].order_type is OrderType.ATTACK_OBJECT
+        assert player_self_orders[-1].target_unit_id == "ex-01"
+
+        # 弹丸落地 → 掉血（无需任何玩家攻击指令）
+        for _ in range(10):
+            battle.tick(0.25)
+            if not battle.projectiles:
+                break
+        assert not battle.projectiles
+        assert enemy.hull < 100
+        # 全程指令日志只有 SELF 源（玩家零攻击指令、无指挥官）
+        assert dispatcher.order_log
+        assert all(order.origin is OrderOrigin.SELF for order in dispatcher.order_log)
