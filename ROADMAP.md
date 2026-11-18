@@ -44,3 +44,20 @@
 - 验收：示例任务脚本全事件触发覆盖
 - 门禁：同 M1
 - 交付（2026-11-18）：domain/scripting/ 两件套——Trigger DSL（declarative frozen dataclass：条件五种 tick_reached/enemy_destroyed/unit_below_hull/unit_in_region/allies_destroyed + 动作五种 spawn_reinforcement/victory/defeat/grant_rp/show_message，JSON 可加载）+ MissionScript/ScriptEngine（照 PyCC2 TriggerSystem 精神：登记序评估 + once/cooldown 门控 + fire_count 可观测；经 BattleService.tick_hook 由 battle_service.tick 驱动，钩子默认 None 保存量零回归）；load_mission_script 统一包装错误（JSON 语法含行号/缺字段/未知 kind/缺必需参数均 MissionScriptError）；示例脚本 data/missions/m1_river_crossing.json 全 5 动作 + 全 5 条件覆盖；unit/integration/e2e 三层验收——示例脚本全事件覆盖（每动作至少一个用例执行 + 真战斗循环开场/渡口/增援/首杀/胜利全触发）、PRESERVE_FORCE 与脚本 defeat 共存不冲突、M6 e2e「增援空投 → dispatcher 交战 → RP 入账 → victory 结算」截图 3 张存 docs/assets/uat_m6/；main() 重写为 M5+M6 演示（双侧 AI 自动攻防 + 首关挂脚本 + 结算/整备文本摘要，QUIT 即退、同任务 3 连败熔断防演示死循环）。
+
+## 交付后注记（2026-11-18）：默认入口交互化 + 本地 MC2 资产管线
+
+- **main() 默认改为交互模式**（用户验收反馈：双侧 AI 演示"选择后不能移动不能开火"，不算真实可玩）：
+  玩家侧机甲不挂 AiCommander，框选/右键移动/右键开火/F 火力姿态复用 M2 既有输入链路
+  （TacticalOrder origin=PLAYER 经 OrderDispatcher 下发，与 AI 同源同路径）；敌方保留 AI。
+  `--demo` 保留原双侧 AI 自动演示；战役链/脚本/结算/整备两模式共用。
+  验收：e2e 交互全链路「框选 → 移动到位 → 右键开火 → 掉血」+ AI 边界断言（玩家机甲只收
+  PLAYER 源指令、敌方指挥官持续产出 COMMANDER 源指令），截图 5 张存 docs/assets/uat_interactive/。
+- **本地 MC2 资产加载管线**（infrastructure/mc2_assets.py + `--mc2-assets <路径>`）：
+  扫描 Shared Source checkout 的 Data/TGL/{256,128}/*.tga（256 优先）与 Data/Art/*.tga，
+  PIL 读取 → convert_alpha，按小写文件名 stem 建索引；机甲映射表 px-01→MadCat / px-02→Thor /
+  ex→UrbanMech（px 前缀回退，可调）；匹配链 精确 stem → 包含关系（"awesome" 命中 awesome1、
+  "madcat" 命中 mcl_mc_madcat_a，大小写不敏感）→ None；渲染层注入可选 asset_pack，命中精灵按
+  格子尺寸缩放绘制（血条/选中框/HUD 仍程序化），root 无效/无 Data/未命中一律优雅降级，
+  未加载时渲染输出与现状逐像素一致（集成测试全图字节比对）。许可红线：真实资产仅本机学习
+  加载，零入库、不再分发；测试 fixture 为 PIL 现场生成 TGA。

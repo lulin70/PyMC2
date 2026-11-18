@@ -1,6 +1,9 @@
 """pygame-ce 渲染：程序化地形、机甲方块、血条与弹丸（M1）。
 
 零外部资产：地形由 tile 坐标确定性哈希生成色块，机甲/血条/选中框均为几何绘制。
+可选注入 MC2AssetPack（本地 MC2 资产，infrastructure 层加载）：机甲命中精灵时按
+格子尺寸缩放 blit（血条/选中框/HUD 仍程序化）；未注入或未命中时保持原色块输出，
+渲染结果与未加载资产完全一致。
 """
 
 from __future__ import annotations
@@ -17,6 +20,7 @@ from pymc2.domain.entities.mech import (
     Mech,
 )
 from pymc2.domain.systems.ballistic import Projectile
+from pymc2.infrastructure.mc2_assets import MC2AssetPack
 from pymc2.services.battle_service import BattleService
 
 WINDOW_WIDTH_PX = 1280
@@ -83,8 +87,9 @@ def _build_terrain_surface() -> pygame.Surface:
 class Renderer:
     """把 BattleService 状态绘制到屏幕（相机平移，无缩放）。"""
 
-    def __init__(self, screen: pygame.Surface) -> None:
+    def __init__(self, screen: pygame.Surface, asset_pack: MC2AssetPack | None = None) -> None:
         self.screen = screen
+        self._assets = asset_pack
         self._terrain = _build_terrain_surface()
         self._font: pygame.font.Font | None = None
         try:
@@ -130,7 +135,15 @@ class Renderer:
         sx, sy = self.world_to_screen(mech.x, mech.y, cam_x, cam_y)
         half = _MECH_SIZE_PX // 2
         rect = pygame.Rect(sx - half, sy - half, _MECH_SIZE_PX, _MECH_SIZE_PX)
-        if mech.alive:
+        sprite = self._mech_sprite(mech) if mech.alive else None
+        if mech.alive and sprite is not None:
+            # MC2 资产命中：精灵按格子尺寸缩放绘制；阵营描边/选中框/血条仍程序化。
+            sprite_rect = sprite.get_rect(center=(sx, sy))
+            self.screen.blit(sprite, sprite_rect)
+            pygame.draw.rect(self.screen, _MECH_BORDER_COLOR, sprite_rect, 2)
+            if selected:
+                pygame.draw.rect(self.screen, _SELECTION_COLOR, sprite_rect.inflate(8, 8), 2)
+        elif mech.alive:
             pygame.draw.rect(self.screen, _FACTION_COLORS[mech.faction], rect)
             pygame.draw.rect(self.screen, _MECH_BORDER_COLOR, rect, 2)
             if selected:
@@ -142,6 +155,12 @@ class Renderer:
             pygame.draw.line(self.screen, _MECH_BORDER_COLOR, rect.bottomleft, rect.topright, 2)
         self._draw_health_bar(mech, sx, sy - half - 10)
         self._draw_label(mech.id, sx, sy - half - 26)
+
+    def _mech_sprite(self, mech: Mech) -> pygame.Surface | None:
+        """资产包机甲精灵：按格子尺寸（TILE_SIZE_PX）缩放缓存；未注入/未命中 → None。"""
+        if self._assets is None:
+            return None
+        return self._assets.scaled_mech_sprite(mech.id, TILE_SIZE_PX)
 
     def _draw_health_bar(self, mech: Mech, center_x: int, top: int) -> None:
         width, height = _HEALTH_BAR_WIDTH, _HEALTH_BAR_HEIGHT

@@ -5,14 +5,23 @@
 （origin=PLAYER）经 OrderDispatcher 下发；AiCommander 每帧经 update()
 按 N tick 间隔产出指令，与玩家指令同源同路径。
 
-M5/M6 演示循环（main）：双侧 AI 指挥官自动攻防；首关挂示例任务脚本
-（增援/RP 奖励/胜负/战报消息）；战斗结束打印结算与整备摘要（文本 UI，
-完整整备屏不在本里程碑范围），整备操作走 RefitService 真实调用。
+两种模式（命令行）：
+- 默认 = **交互模式**：真人可玩。玩家侧机甲不经 AiCommander（框选/右键移动/
+  右键攻击/F 火力姿态走既有 handle_event 输入链路，指令 origin=PLAYER 经
+  OrderDispatcher 下发），敌方保留 AiCommander goal 分解；
+- ``--demo`` = 双侧 AI 自动演示（原 main 行为）：玩家侧也由 AiCommander 指挥。
+
+两种模式均沿用 M5 任务链 + 首关任务脚本 + 结算/整备文本摘要。
+可选 ``--mc2-assets <本地路径>`` 加载 MechCommander 2 Shared Source 资产
+（仅限本机学习，不打包不再分发；缺省程序化绘制）。
 """
 
 from __future__ import annotations
 
+import argparse
 import math
+import sys
+from collections.abc import Sequence
 from dataclasses import dataclass, field
 from pathlib import Path
 
@@ -25,6 +34,7 @@ from pymc2.domain.scripting.mission_script import (
     ScriptEngine,
     load_mission_script,
 )
+from pymc2.infrastructure.mc2_assets import MC2AssetPack
 from pymc2.presentation.renderer import WINDOW_HEIGHT_PX, WINDOW_WIDTH_PX, Renderer
 from pymc2.services.ai_commander import AiCommander
 from pymc2.services.battle_service import BattleService, create_m2_battle
@@ -42,6 +52,34 @@ MAX_RETRIES_PER_MISSION = 3  # demo 同任务连续战败上限（防自动演�
 def _default_script_path() -> Path:
     """示例任务脚本路径（仓库 data/missions，与 cwd 无关）。"""
     return Path(__file__).resolve().parents[2] / "data" / "missions" / "m1_river_crossing.json"
+
+
+def parse_args(argv: Sequence[str] = ()) -> argparse.Namespace:
+    """命令行参数：默认交互模式（真人手操 vs 敌方 AI），``--demo`` 双侧 AI 自动演示。"""
+    parser = argparse.ArgumentParser(
+        prog="pymc2",
+        description=(
+            "PyMC2 实时战术（MechCommander 2 复刻学习项目）。"
+            "默认交互模式：框选 → 右键移动 → 右键敌机甲开火 → F 火力姿态；"
+            "--demo 切双侧 AI 自动演示。"
+        ),
+    )
+    parser.add_argument(
+        "--demo",
+        action="store_true",
+        help="双侧 AI 自动演示（玩家侧机甲也由 AiCommander 指挥，无人交互）",
+    )
+    parser.add_argument(
+        "--mc2-assets",
+        type=Path,
+        default=None,
+        metavar="PATH",
+        help=(
+            "本地 MechCommander 2 Shared Source checkout 路径（含 Data/ 目录）；"
+            "仅限本机学习加载、不打包不再分发；缺省走程序化绘制"
+        ),
+    )
+    return parser.parse_args(list(argv))
 
 
 @dataclass
@@ -73,12 +111,13 @@ def create_game(
     *,
     service: BattleService | None = None,
     commander: AiCommander | None = None,
+    asset_pack: MC2AssetPack | None = None,
 ) -> Game:
-    """组装一局战斗（service/commander 可注入以便测试固定随机源与 AI 开关）。"""
+    """组装一局战斗（service/commander/asset_pack 可注入以便测试固定随机源与 AI/资产开关）。"""
     return Game(
         screen=screen,
         service=service if service is not None else create_m2_battle(),
-        renderer=Renderer(screen),
+        renderer=Renderer(screen, asset_pack=asset_pack),
         commander=commander,
     )
 
@@ -223,18 +262,26 @@ def _run_refit_phase(state: CampaignState, refit: RefitService) -> None:
         print(f"   新购 {hired.id}（-{HIRE_COST_RP} RP → 结余 {state.requisition_points}）")
 
 
-def main() -> int:
-    """M5/M6 演示主循环：双侧 AI 自动攻防 + 首关任务脚本 + 结算/整备摘要输出。"""
+def main(argv: Sequence[str] = ()) -> int:
+    """默认交互模式：玩家手操己方机甲 vs 敌方 AI 指挥官；``--demo`` 切双侧 AI 自动演示。"""
+    args = parse_args(argv)
+    asset_pack: MC2AssetPack | None = None
+    if args.mc2_assets is not None:
+        asset_pack = MC2AssetPack.load(args.mc2_assets)
+        if asset_pack is None:
+            print(f"[PyMC2] {args.mc2_assets} 下未找到有效 Data/TGL 或 Data/Art 资产，降级程序化绘制")
     pygame.init()
     try:
         screen = pygame.display.set_mode((WINDOW_WIDTH_PX, WINDOW_HEIGHT_PX))
-        pygame.display.set_caption("PyMC2 - M5 Campaign / M6 Mission Script")
+        mode_label = "AI Demo" if args.demo else "Interactive"
+        pygame.display.set_caption(f"PyMC2 - M5 Campaign / M6 Mission Script ({mode_label})")
         clock = pygame.time.Clock()
         state = start_campaign()
         chain = MissionChain()
         refit = RefitService()
         script = load_mission_script(_default_script_path())
-        player_ai = AiCommander(Faction.PLAYER)
+        # 交互模式玩家侧不挂指挥官（指令仅来自真人输入 origin=PLAYER）；--demo 保留双侧 AI。
+        player_ai = AiCommander(Faction.PLAYER) if args.demo else None
         enemy_ai = AiCommander(Faction.ENEMY)
         retries = 0
         failed_mission_id: str | None = None
@@ -249,14 +296,15 @@ def main() -> int:
             engine = ScriptEngine(script, context)
             if state.mission_index == 0:
                 engine.attach(battle)  # 示例脚本叙事对应首关（增援/RP 奖励/胜负）
-            game = create_game(screen, service=battle)
+            game = create_game(screen, service=battle, asset_pack=asset_pack)
             while (
                 game.running
                 and context.outcome is None
                 and not chain.is_victory(battle)
                 and not chain.is_defeat(battle)
             ):
-                player_ai.update(battle, game.dispatcher)
+                if player_ai is not None:
+                    player_ai.update(battle, game.dispatcher)
                 enemy_ai.update(battle, game.dispatcher)
                 dt = min(clock.tick(60) / 1000.0, MAX_FRAME_DT_S)
                 run_frame(game, dt)
@@ -281,4 +329,4 @@ def main() -> int:
 
 
 if __name__ == "__main__":
-    raise SystemExit(main())
+    raise SystemExit(main(sys.argv[1:]))
