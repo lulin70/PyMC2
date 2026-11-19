@@ -11,7 +11,11 @@
 - 默认 = **交互模式**：真人可玩。玩家侧机甲不经 AiCommander（框选/右键移动/
   F 火力姿态走既有 handle_event 输入链路，指令 origin=PLAYER 经
   OrderDispatcher 下发；开火交给自动交战），敌方保留 AiCommander goal 分解；
-- ``--demo`` = 双侧 AI 自动演示（原 main 行为）：玩家侧也由 AiCommander 指挥。
+  键盘操控（用户反馈：Mac 上鼠标移动不便）：方向键/W/S/D 选中组沿方向移动
+  KEYBOARD_MOVE_TILES 格（编队平行偏移），A 键托管开关（挂上/解除玩家侧
+  AiCommander，辅助决策语义：手动指令覆盖 AI，下一决策周期 AI 可能重新接管）；
+- ``--demo`` = 双侧 AI 自动演示（原 main 行为）：玩家侧也由 AiCommander 指挥
+  （A 键托管无效）。
 
 两种模式均沿用 M5 任务链 + 首关任务脚本 + 结算/整备文本摘要。
 MC2 资产默认自动发现（env ``PYMC2_MC2_ASSETS`` → ``~/.pymc2/mc2-assets``），
@@ -31,7 +35,7 @@ from pathlib import Path
 
 import pygame
 
-from pymc2.domain.entities.mech import MAP_SIZE_PX, TILE_SIZE_PX, Faction, FireMode
+from pymc2.domain.entities.mech import MAP_SIZE_PX, MAP_TILES, TILE_SIZE_PX, Faction, FireMode
 from pymc2.domain.orders.tactical_order import OrderOrigin, OrderType, TacticalOrder
 from pymc2.domain.scripting.mission_script import (
     ScriptContext,
@@ -48,6 +52,19 @@ from pymc2.services.order_dispatcher import OrderDispatcher
 from pymc2.services.refit_service import HIRE_COST_RP, RefitService
 
 FIRE_MODE_KEY = pygame.K_f
+AUTO_COMMAND_KEY = pygame.K_a  # 托管开关（交互模式专属；--demo 双侧 AI 已就位，无效）
+# 键盘移动键位（用户反馈：Mac 上鼠标移动操作不便）：方向键四方向全支持；
+# 字母区仅 W/S/D——A 归托管开关，左移依赖方向键 ←（README 键位表同步说明）。
+MOVE_KEY_DIRECTIONS: dict[int, tuple[int, int]] = {
+    pygame.K_UP: (0, -1),
+    pygame.K_DOWN: (0, 1),
+    pygame.K_LEFT: (-1, 0),
+    pygame.K_RIGHT: (1, 0),
+    pygame.K_w: (0, -1),
+    pygame.K_s: (0, 1),
+    pygame.K_d: (1, 0),
+}
+KEYBOARD_MOVE_TILES = 5  # 单次按键沿方向移动的格数（模块常量，可调）
 MAX_FRAME_DT_S = 0.1
 CLICK_MAX_DRAG_PX = 4.0  # 拖拽位移低于该阈值视为单击（保留 M1 单击选中路径）
 MAX_RETRIES_PER_MISSION = 3  # demo 同任务连续战败上限（防自动演示死循环）
@@ -104,6 +121,8 @@ class Game:
     renderer: Renderer
     dispatcher: OrderDispatcher = field(default_factory=OrderDispatcher)
     commander: AiCommander | None = None  # M4：注入则启用 AI 指挥官决策循环
+    player_commander: AiCommander | None = None  # A 键托管：玩家侧 AI 指挥官（None=真人手操）
+    demo_mode: bool = False  # --demo 标记：A 键托管无效（双侧 AI 已就位）
     camera: Camera = field(default_factory=Camera)
     drag_start: tuple[float, float] | None = None
     drag_current: tuple[float, float] | None = None
@@ -117,6 +136,7 @@ def create_game(
     service: BattleService | None = None,
     commander: AiCommander | None = None,
     asset_pack: MC2AssetPack | None = None,
+    demo_mode: bool = False,
 ) -> Game:
     """组装一局战斗（service/commander/asset_pack 可注入以便测试固定随机源与 AI/资产开关）。
 
@@ -128,6 +148,7 @@ def create_game(
         service=service if service is not None else create_m2_battle(),
         renderer=Renderer(screen, asset_pack=asset_pack),
         commander=commander,
+        demo_mode=demo_mode,
     )
     game.service.dispatcher = game.dispatcher
     return game
@@ -219,6 +240,67 @@ def _cycle_fire_mode(game: Game) -> None:
     game.dispatcher.dispatch(order, game.service)
 
 
+def _toggle_auto_command(game: Game) -> None:
+    """A 键托管（交互模式专属）：挂上/解除玩家侧 AiCommander（goal 分解：后撤>集火>占区）。
+
+    解除不清除已下发指令——移动/攻击执行完自然停止；托管期间手动指令仍可下达
+    （辅助决策语义：指令覆盖 AI 决策，下一决策周期 AI 可能重新接管）。
+    ``--demo`` 下无效：双侧 AI 已就位，再挂玩家侧指挥官会双重决策。
+    """
+    if game.demo_mode:
+        return
+    if game.player_commander is None:
+        game.player_commander = AiCommander(Faction.PLAYER)
+    else:
+        game.player_commander = None
+
+
+def _clamp_tile(tile: tuple[int, int]) -> tuple[int, int]:
+    """tile 坐标钳制在地图内（键盘位移可能越出边界）。"""
+    return (max(0, min(MAP_TILES - 1, tile[0])), max(0, min(MAP_TILES - 1, tile[1])))
+
+
+def _dispatch_formation_move(service: BattleService, dispatcher: OrderDispatcher, dx: int, dy: int) -> int:
+    """键盘移动：选中组沿方向移动 KEYBOARD_MOVE_TILES 格（编队平行偏移）。
+
+    每机以**自身当前 tile** 为基点 + 方向×KEYBOARD_MOVE_TILES → 队形平行平移、
+    目标天然互异（标准 RTS 相对队形移动）；仅当多机堆叠同 tile 导致目标撞点时，
+    按移动方向横向逐格交替错开（0,+1,-1,+2,-2…，避免全挤同一点触发让路超时
+    逃生阀）；目标越界钳制到地图内。返回下发指令数。
+    """
+    candidates = [service.get(uid) for uid in service.selected_ids]
+    mechs = [m for m in candidates if m is not None and m.alive]
+    if not mechs:
+        return 0
+    perp_x, perp_y = dy, -dx  # 移动方向旋转 -90°：横向错开方向
+    offsets = [0]
+    for k in range(1, len(mechs)):
+        offsets.extend((k, -k))
+    used: set[tuple[int, int]] = set()
+    dispatched = 0
+    for mech in mechs:
+        base = (mech.tile[0] + dx * KEYBOARD_MOVE_TILES, mech.tile[1] + dy * KEYBOARD_MOVE_TILES)
+        tile = _clamp_tile(base)
+        for offset in offsets:
+            candidate = _clamp_tile((base[0] + perp_x * offset, base[1] + perp_y * offset))
+            if candidate not in used:
+                tile = candidate
+                break
+        used.add(tile)
+        dispatcher.dispatch(
+            TacticalOrder(
+                order_type=OrderType.MOVE_TO_POINT,
+                unit_ids=(mech.id,),
+                origin=OrderOrigin.PLAYER,
+                target_tile=tile,
+                target_unit_id=None,
+            ),
+            service,
+        )
+        dispatched += 1
+    return dispatched
+
+
 def handle_event(game: Game, event: pygame.event.Event) -> None:
     """处理单个输入事件（世界坐标 = 屏幕坐标 + 相机偏移）。
 
@@ -253,8 +335,14 @@ def handle_event(game: Game, event: pygame.event.Event) -> None:
     if event.type == pygame.MOUSEBUTTONUP and event.button == 1:
         _finish_selection_drag(game, _world_pos(game, event.pos))
         return
-    if event.type == pygame.KEYDOWN and event.key == FIRE_MODE_KEY:
-        _cycle_fire_mode(game)
+    if event.type == pygame.KEYDOWN:
+        if event.key == FIRE_MODE_KEY:
+            _cycle_fire_mode(game)
+        elif event.key == AUTO_COMMAND_KEY:
+            _toggle_auto_command(game)
+        elif event.key in MOVE_KEY_DIRECTIONS:
+            dx, dy = MOVE_KEY_DIRECTIONS[event.key]
+            _dispatch_formation_move(game.service, game.dispatcher, dx, dy)
 
 
 def run_frame(game: Game, dt: float) -> None:
@@ -263,6 +351,8 @@ def run_frame(game: Game, dt: float) -> None:
         handle_event(game, event)
     if game.commander is not None:
         game.commander.update(game.service, game.dispatcher)
+    if game.player_commander is not None:  # A 键托管：玩家侧 AI 与敌方 AI 同源同路径
+        game.player_commander.update(game.service, game.dispatcher)
     game.service.tick(dt)
     update_camera(game)
     drag_rect: tuple[float, float, float, float] | None = None
@@ -270,7 +360,14 @@ def run_frame(game: Game, dt: float) -> None:
         x0, y0 = game.drag_start
         x1, y1 = game.drag_current
         drag_rect = (x0, y0, x1, y1)
-    game.renderer.render(game.service, game.camera.x, game.camera.y, drag_rect=drag_rect)
+    game.renderer.render(
+        game.service,
+        game.camera.x,
+        game.camera.y,
+        drag_rect=drag_rect,
+        auto_command=game.player_commander is not None,
+        show_hints=not game.demo_mode,
+    )
     pygame.display.flip()
     game.frames += 1
 
@@ -328,7 +425,7 @@ def main(argv: Sequence[str] = ()) -> int:
             engine = ScriptEngine(script, context)
             if state.mission_index == 0:
                 engine.attach(battle)  # 示例脚本叙事对应首关（增援/RP 奖励/胜负）
-            game = create_game(screen, service=battle, asset_pack=asset_pack)
+            game = create_game(screen, service=battle, asset_pack=asset_pack, demo_mode=args.demo)
             while (
                 game.running
                 and context.outcome is None

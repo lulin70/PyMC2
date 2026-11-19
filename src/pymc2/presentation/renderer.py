@@ -108,8 +108,14 @@ class Renderer:
         cam_y: float,
         *,
         drag_rect: tuple[float, float, float, float] | None = None,
+        auto_command: bool = False,
+        show_hints: bool = True,
     ) -> None:
-        """绘制一帧：地形 → 移动标记 → 弹丸 → 机甲（按 y 排序，血条/选中框）→ 攻击高亮 → 框选矩形 → HUD。"""
+        """绘制一帧：地形 → 移动标记 → 弹丸 → 机甲（按 y 排序，血条/选中框）→ 攻击高亮 → 框选矩形 → HUD。
+
+        auto_command：托管激活时状态行追加 ``AUTO: ON``；show_hints：追加键位提示
+        （``--demo`` 自动演示传 False——A 托管提示对无人交互模式无意义）。
+        """
         self.screen.fill(_GRASS_BASE)
         self.screen.blit(self._terrain, (-int(cam_x), -int(cam_y)))
         for uid in service.selected_ids:
@@ -130,7 +136,7 @@ class Renderer:
                 self._draw_attack_mark(target, cam_x, cam_y)
         if drag_rect is not None:
             self._draw_drag_rect(drag_rect, cam_x, cam_y)
-        self._draw_hud(service)
+        self._draw_hud(service, auto_command=auto_command, show_hints=show_hints)
 
     def _draw_mech(self, mech: Mech, cam_x: float, cam_y: float, *, selected: bool) -> None:
         sx, sy = self.world_to_screen(mech.x, mech.y, cam_x, cam_y)
@@ -198,8 +204,8 @@ class Renderer:
         sx1, sy1 = self.world_to_screen(max(x0, x1), max(y0, y1), cam_x, cam_y)
         pygame.draw.rect(self.screen, _SELECTION_COLOR, pygame.Rect(sx0, sy0, sx1 - sx0, sy1 - sy0), 1)
 
-    def _draw_hud(self, service: BattleService) -> None:
-        """底部状态行：主选中机甲火力姿态（含警戒/关机）、热量与选中列表。"""
+    def _draw_hud(self, service: BattleService, *, auto_command: bool = False, show_hints: bool = True) -> None:
+        """底部状态行：火力姿态（含警戒/关机）、热量、选中列表、托管状态（AUTO: ON）与键位提示。"""
         if self._font is None:
             return
         primary = service.selected
@@ -214,7 +220,13 @@ class Renderer:
             if primary.heat.shutdown_active:
                 heat_text += " [SHUTDOWN]"
         names = ",".join(service.selected_ids) if service.selected_ids else "-"
-        line = self._font.render(f"FIRE: {stance} | SEL: {names}{heat_text}", True, _LABEL_COLOR)
+        text = f"FIRE: {stance} | SEL: {names}{heat_text}"
+        if auto_command:
+            text += " | AUTO: ON"
+        if show_hints:
+            # pygame 内置字体无 CJK 字形，提示行用 ASCII 保证可渲染（中文键位说明见 README）。
+            text += " | MOVE: ARROWS/W S D | FIRE: F | AUTO: A"
+        line = self._font.render(text, True, _LABEL_COLOR)
         self.screen.blit(line, (8, self.screen.get_height() - 20))
 
     def _draw_projectile(self, projectile: Projectile, cam_x: float, cam_y: float) -> None:

@@ -45,9 +45,26 @@ python src/pymc2/main.py --mc2-assets <本地路径>  # 显式指定资产路径
   机甲同样移动过去），F 键循环火力姿态（FREE/HOLD，HUD 状态行可见）；开火由**自动交战**
   接管：FREE 姿态机甲对射程内最近敌机甲自动锁定开火（origin=SELF 经 OrderDispatcher
   下发，与玩家/指挥官同源同路径；显式指定的目标优先、HOLD 火力纪律不自动开火）。
-  敌方保留 AiCommander goal 分解（后撤/集火/占区）。玩家侧不挂指挥官，AI 决策只作用于
-  敌方；战役链（任务脚本/结算/整备摘要）两模式共用。
-- **演示模式（`--demo`）**：玩家侧也由 AiCommander 指挥，双侧 AI 自动攻防（原 main 行为）。
+  键盘操控：方向键 / W S D 单次按键选中组沿方向移动 5 格；A 键托管开关（挂上/解除
+  玩家侧 AiCommander，托管激活时 HUD 显示 `AUTO: ON`）。敌方保留 AiCommander goal
+  分解（后撤/集火/占区）。托管未激活时玩家侧不挂指挥官，AI 决策只作用于敌方；
+  战役链（任务脚本/结算/整备摘要）两模式共用。
+- **演示模式（`--demo`）**：玩家侧也由 AiCommander 指挥，双侧 AI 自动攻防（原 main 行为），
+  A 键托管无效。
+- **键位表（交互模式）**：
+
+  | 键 | 操作 |
+  | --- | --- |
+  | ← ↑ ↓ → | 选中组沿方向移动 5 格（四方向全支持，左移用 ←） |
+  | W / S / D | 上 / 下 / 右移 5 格（A 键已划归托管，字母区无左移键） |
+  | F | 循环火力姿态 FREE→HOLD（作用于全部选中单位） |
+  | A | 托管开关：玩家侧 AiCommander 接管/解除（`--demo` 下无效） |
+  | 左键拖拽 / 单击 | 框选 / 单选己方机甲 |
+  | 右键 | 移动到目标点（tile 中心；开火交给自动交战） |
+
+  键盘移动与右键移动同路径（MOVE_TO_POINT origin=PLAYER），与让路协商天然共存；
+  托管为辅助决策语义——托管期间手动指令仍可下达（指令覆盖 AI 决策，下一决策周期
+  AI 可能重新接管）。
 - **MC2 资产自动发现**：默认按 `PYMC2_MC2_ASSETS` 环境变量 → `~/.pymc2/mc2-assets` 缓存目录
   顺序探测；`--mc2-assets <路径>` 显式覆盖。加载 `Data/TGL/{256,128}/*.tga` 与 `Data/Art/*.tga`
   建精灵索引；机甲命中精灵时按格子尺寸缩放绘制（血条/选中框/HUD 仍程序化），未发现或
@@ -64,3 +81,4 @@ python src/pymc2/main.py --mc2-assets <本地路径>  # 显式指定资产路径
 - M6 脚本化：已交付（2026-11-18）。Trigger DSL（条件 tick_reached/enemy_destroyed/unit_below_hull/unit_in_region/allies_destroyed + 动作 spawn_reinforcement/victory/defeat/grant_rp/show_message，declarative dataclass、JSON 可加载）；MissionScript + ScriptEngine（PyCC2 TriggerSystem 精神：once/cooldown 门控、fire_count 可观测），经 BattleService.tick_hook 由 battle_service.tick 驱动（默认 None 零回归）；load_mission_script 错误统一 MissionScriptError（JSON 行号/缺字段/未知 kind/缺参数）；示例脚本 data/missions/m1_river_crossing.json 全 5 动作+全 5 条件；验收「示例脚本全事件覆盖（每动作均有用例执行）+ PRESERVE_FORCE 与脚本 defeat 共存 + e2e 增援→交战→RP→victory」截图 3 张存 docs/assets/uat_m6/；main() 重写为 M5+M6 自动演示（双侧 AI + 首关脚本 + 结算/整备文本摘要）。
 - 交互化修补：已交付（2026-11-18）。main() 默认改为**交互模式**（真人可玩：玩家侧不挂 AiCommander，框选/右键移动/右键开火/F 火力姿态走既有输入链路，敌方保留 AI；`--demo` 保留原双侧 AI 自动演示）；新增 `--mc2-assets` 本地 MC2 资产加载管线（infrastructure/mc2_assets.py：扫描 Data/TGL/{256,128}+Data/Art 的 TGA 按小写 stem 建索引，机甲映射 px-01→MadCat / px-02→Thor / ex→UrbanMech，匹配链 精确→包含→程序化回退，未加载/未命中渲染逐像素不变）；e2e 交互全链路「框选 → 移动到位 → 开火 → 掉血」截图 5 张存 docs/assets/uat_interactive/，资产降级路径渲染一致性集成测试通过。
 - 用户反馈修补（开火自动化 + 资产免配置）：已交付（2026-11-18）。①**自动交战**（反馈：开火应自动，不要右键点敌人）——BattleService.tick 新增自动交战步骤：FREE 姿态存活机甲对射程内最近敌机甲自动锁定，构造 TacticalOrder（origin=SELF）经 dispatcher 下发（与玩家/指挥官同路径）；显式指定目标（attack_target_id 仍有效）优先、SELF 不覆盖，目标死亡/出射程清锁下 tick 重锁，HOLD 火力纪律不自动锁定，冷却/关机/武器损毁期间不下发（防指令日志刷屏）；右键语义简化为一律 MOVE_TO_POINT；②**MC2 资产默认自动发现**（反馈：去掉路径门槛）——default_pack_root() 按 env `PYMC2_MC2_ASSETS` → `~/.pymc2/mc2-assets` 探测，`--mc2-assets` 显式路径优先，加载成功打印资产摘要、失败维持降级提示；e2e 交互链路改写为「框选 → 右键敌机甲=移动 → 自动交战击毁（零玩家攻击指令）」截图 4 张存 docs/assets/uat_interactive/，新增自动交战单测/集成测试与资产探测单测（HOME/env monkeypatch 隔离，不读真实资产仓库）。
+- 用户反馈修补（键盘操控 + A 键托管）：已交付（2026-11-19）。①**键盘移动**（反馈：Mac 上鼠标移动操作不便）——方向键四方向 + 字母区 W/S/D 单次按键选中组沿方向移动 KEYBOARD_MOVE_TILES=5 格（模块常量可调；A 归托管开关故字母区无左移键，左移用 ←），每机以自身 tile 为基点 + 方向×N **编队平行偏移**（队形保持、目标天然互异），堆叠同 tile 撞点时按移动方向横向逐格交替错开（防全挤同一点触发让路超时逃生阀），越界钳制；HUD 状态行追加键位提示（pygame 内置字体无 CJK 字形，提示行用 ASCII：`MOVE: ARROWS/W S D | FIRE: F | AUTO: A`，中文键位说明见上方键位表）。②**A 键托管**——Game 新增 player_commander/demo_mode 字段，handle_event KEYDOWN A 挂/解除 AiCommander(Faction.PLAYER)（run_frame 决策循环与敌方 AI 同源同路径，goal 分解：后撤>集火>占区），解除不清除已下发指令（移动/攻击执行完自然停止）；托管为辅助决策语义——托管期间手动指令仍可下达，下一决策周期 AI 可能重新接管；`--demo` 下 A 无效（双侧 AI 已就位，防双重决策）；托管激活时 HUD 显示 `AUTO: ON`。e2e「框选 → F 转 HOLD 冻结火力 → K_d 键盘编队移动到位 → A 托管 COMMANDER 源指令入账（ATTACK_OBJECT 目标 ex-01）→ F 恢复 FREE 自主交战落地 → A 解除后零新玩家侧 COMMANDER 指令」截图 3 张存 docs/assets/uat_keyboard/；新增单测 15 例（键位表/编队移动/堆叠错开/越界钳制/托管切换/demo 门禁/HUD 文本）+ e2e 2 例，存量 352 例零回归。
