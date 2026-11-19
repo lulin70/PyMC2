@@ -96,11 +96,7 @@ def save_screenshot(screen: pygame.Surface, name: str) -> Path:
 
 def visible_decorations(game: main_module.Game) -> tuple[tuple[int, int, str], ...]:
     """开局相机 (0,0) 视口内（y<22）且不与机甲出生点重叠的装饰撒点。"""
-    return tuple(
-        (tile_x, tile_y, kind)
-        for tile_x, tile_y, kind in game.renderer._decorations
-        if tile_y < 22
-    )
+    return tuple((tile_x, tile_y, kind) for tile_x, tile_y, kind in game.renderer._decorations if tile_y < 22)
 
 
 def test_terrain_textured_battle_with_decorations(game: main_module.Game) -> None:

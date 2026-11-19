@@ -44,10 +44,7 @@ def test_default_count_is_fifteen() -> None:
 def test_count_clamped_to_candidates() -> None:
     """候选不足时钳制：占满全部非道路格后只返回剩余空格数。"""
     occupied = {
-        (x, y)
-        for y in range(MAP_TILES)
-        for x in range(MAP_TILES)
-        if y != _ROAD_ROW and x != _ROAD_COL
+        (x, y) for y in range(MAP_TILES) for x in range(MAP_TILES) if y != _ROAD_ROW and x != _ROAD_COL
     }  # 占满非道路格 → 候选为空
     assert plan_decorations(occupied_tiles=occupied) == ()
 

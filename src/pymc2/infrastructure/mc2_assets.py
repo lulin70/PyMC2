@@ -159,8 +159,8 @@ class MC2AssetPack:
         self._sprites = sprites
         self._ground_tiles = ground_tiles if ground_tiles is not None else {}
         self._overlay_sequences = overlay_sequences if overlay_sequences is not None else {}
-        self.tga_count = len(sprites) + len(self._ground_tiles) + sum(
-            len(frames) for frames in self._overlay_sequences.values()
+        self.tga_count = (
+            len(sprites) + len(self._ground_tiles) + sum(len(frames) for frames in self._overlay_sequences.values())
         )  # pack 统计：成功索引的 TGA 数量
         self._resolve_cache: dict[str, pygame.Surface | None] = {}
         self._scaled_cache: dict[tuple[str, int], pygame.Surface | None] = {}
