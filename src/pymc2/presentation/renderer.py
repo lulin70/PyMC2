@@ -6,7 +6,9 @@
 - Wave V1 地形合成：pack 含地面/覆盖资产时改铺 MC2 纹理（Detail 系列草地 +
   2lanedirt 道路 overlay，接缝观感优先选帧），pack 无地面资产时地形保持原色块；
 - 环境点缀：``plan_decorations`` 确定性撒点 + ``set_decorations`` 注入，非道路
-  空 tile 撒树/房精灵，纯装饰不阻挡移动不参与命中（对齐让路协商语义）。
+  空 tile 撒树/房精灵，纯装饰不阻挡移动不参与命中（对齐让路协商语义）；
+- Wave V2 机甲受损变体：``MECH_DAMAGED_HULL_RATIO`` 以下存活机甲改用 damaged 精灵
+  （资产包变体派生，未命中回退基名精灵），无资产包路径渲染输出零改动。
 未注入或未命中时保持原色块输出，渲染结果与未加载资产完全一致。
 """
 
@@ -42,6 +44,10 @@ _ROAD_COL = 25
 _MECH_SIZE_PX = 24
 _HEALTH_BAR_WIDTH = 28
 _HEALTH_BAR_HEIGHT = 4
+
+# Wave V2 机甲受损变体：hull_ratio ≤ 阈值且存活 → 请求 MC2 资产受损精灵（damaged
+# 变体 stem 派生，未命中回退基名精灵；无资产包时本常量不参与任何路径，渲染零改动）。
+MECH_DAMAGED_HULL_RATIO = 0.5
 
 # Wave V1 地形合成：2lanedirt 序列帧语义（按边缘连通性勘测）——0000=竖直直道
 # （上下连通）、0001=水平直道（左右连通）、0002-0005=四向弯道（本图无弯道段，
@@ -327,10 +333,15 @@ class Renderer:
         self._draw_label(mech.id, sx, sy - half - 26)
 
     def _mech_sprite(self, mech: Mech) -> pygame.Surface | None:
-        """资产包机甲精灵：按格子尺寸（TILE_SIZE_PX）缩放缓存；未注入/未命中 → None。"""
+        """资产包机甲精灵：按格子尺寸（TILE_SIZE_PX）缩放缓存；未注入/未命中 → None。
+
+        Wave V2：hull_ratio ≤ MECH_DAMAGED_HULL_RATIO 且存活 → 请求受损变体精灵
+        （资产包无变体时按包内回退语义返回基名精灵，输出与现状一致）。
+        """
         if self._assets is None:
             return None
-        return self._assets.scaled_mech_sprite(mech.id, TILE_SIZE_PX)
+        damaged = mech.alive and mech.hull_ratio <= MECH_DAMAGED_HULL_RATIO
+        return self._assets.scaled_mech_sprite(mech.id, TILE_SIZE_PX, damaged=damaged)
 
     def _draw_decorations(self, cam_x: float, cam_y: float) -> None:
         """环境点缀（Wave V1）：非道路空 tile 的树/房精灵，画在地形之上、机甲之下。

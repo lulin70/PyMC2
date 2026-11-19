@@ -18,10 +18,11 @@ from PIL import Image
 
 from pymc2.domain.entities.mech import Faction, Mech, Weapon
 from pymc2.infrastructure.mc2_assets import MC2AssetPack
-from pymc2.presentation.renderer import WINDOW_HEIGHT_PX, WINDOW_WIDTH_PX, Renderer
+from pymc2.presentation.renderer import MECH_DAMAGED_HULL_RATIO, WINDOW_HEIGHT_PX, WINDOW_WIDTH_PX, Renderer
 from pymc2.services.battle_service import BattleService
 
 MADCAT_COLOR = (200, 40, 40, 255)
+MADCAT_DAM_COLOR = (120, 40, 30, 255)
 PLAYER_COLOR = (70, 130, 230)
 SCREEN_SIZE = (WINDOW_WIDTH_PX, WINDOW_HEIGHT_PX)
 # Wave V1 fixture 色板
@@ -200,3 +201,68 @@ class TestDecorationRender:
         renderer.set_decorations(((35, 20, "tree"),))
         renderer.render(service, 0.0, 0.0)
         assert screen.get_at(pick_grass_pixel())[:3] == PLAYER_COLOR[:3]  # 机甲色块盖住树
+
+
+def make_damaged_pack(tmp_path: Path, *, with_dam_variant: bool = True) -> MC2AssetPack:
+    """受损变体 mini pack：madcat 基名 + 可选 MadCatDam 变体（真资产零入库）。"""
+    root = tmp_path / "mc2-damaged"
+    base = root / "Data" / "TGL" / "128" / "madcat.tga"
+    base.parent.mkdir(parents=True, exist_ok=True)
+    Image.new("RGBA", (32, 32), MADCAT_COLOR).save(base)
+    if with_dam_variant:
+        Image.new("RGBA", (32, 32), MADCAT_DAM_COLOR).save(root / "Data" / "TGL" / "128" / "madcatdam.tga")
+    pack = MC2AssetPack.load(root)
+    assert pack is not None
+    return pack
+
+
+def make_single_mech_battle() -> BattleService:
+    """单台玩家机甲战局（px-01 → madcat，默认 hull=100 便于按阈值压血）。"""
+    service = BattleService()
+    service.add_mech(Mech("px-01", Faction.PLAYER, 300.0, 300.0, weapon=Weapon("ppc", 25, 420.0, 2.0)))
+    return service
+
+
+class TestDamagedSpriteSwitch:
+    """Wave V2：hull_ratio ≤ MECH_DAMAGED_HULL_RATIO 且存活 → damaged 变体精灵。"""
+
+    def test_full_hull_uses_base_sprite(self, screen: pygame.Surface, tmp_path: Path) -> None:
+        service = make_single_mech_battle()
+        renderer = Renderer(screen, asset_pack=make_damaged_pack(tmp_path))
+        renderer.render(service, 0.0, 0.0)
+        assert screen.get_at((300, 300))[:3] == MADCAT_COLOR[:3]
+
+    def test_ratio_at_threshold_uses_damaged_sprite(self, screen: pygame.Surface, tmp_path: Path) -> None:
+        """边界：hull_ratio == 阈值（≤0.5）即切受损变体。"""
+        service = make_single_mech_battle()
+        mech = service.mechs["px-01"]
+        mech.take_damage((1 - MECH_DAMAGED_HULL_RATIO) * mech.max_hull)
+        assert mech.hull_ratio == MECH_DAMAGED_HULL_RATIO
+        renderer = Renderer(screen, asset_pack=make_damaged_pack(tmp_path))
+        renderer.render(service, 0.0, 0.0)
+        assert screen.get_at((300, 300))[:3] == MADCAT_DAM_COLOR[:3]
+
+    def test_ratio_above_threshold_uses_base_sprite(self, screen: pygame.Surface, tmp_path: Path) -> None:
+        service = make_single_mech_battle()
+        mech = service.mechs["px-01"]
+        mech.take_damage(mech.max_hull * 0.49)  # ratio 0.51 > 0.5
+        assert mech.hull_ratio > MECH_DAMAGED_HULL_RATIO
+        renderer = Renderer(screen, asset_pack=make_damaged_pack(tmp_path))
+        renderer.render(service, 0.0, 0.0)
+        assert screen.get_at((300, 300))[:3] == MADCAT_COLOR[:3]
+
+    def test_damaged_without_variant_falls_back_to_base(self, screen: pygame.Surface, tmp_path: Path) -> None:
+        """包内无变体文件：受损机甲回退基名精灵（输出与现状一致）。"""
+        service = make_single_mech_battle()
+        service.mechs["px-01"].take_damage(60)
+        renderer = Renderer(screen, asset_pack=make_damaged_pack(tmp_path, with_dam_variant=False))
+        renderer.render(service, 0.0, 0.0)
+        assert screen.get_at((300, 300))[:3] == MADCAT_COLOR[:3]
+
+    def test_no_pack_damaged_mech_stays_procedural(self, screen: pygame.Surface) -> None:
+        """无资产包：受损机甲保持阵营色块（V2 阈值路径不触碰程序化降级）。"""
+        service = make_single_mech_battle()
+        service.mechs["px-01"].take_damage(60)
+        renderer = Renderer(screen)
+        renderer.render(service, 0.0, 0.0)
+        assert screen.get_at((300, 300))[:3] == PLAYER_COLOR

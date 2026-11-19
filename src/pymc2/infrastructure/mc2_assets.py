@@ -14,7 +14,8 @@
   置不透明，否则按 alpha 合成会近全黑；
 - ``Data/Textures/64Overlays/*.tga``：道路/覆盖瓦片序列（Wave V1）——alpha 是
   形状蒙版（路体外 ≤140 软边、路体外 0），按原生 alpha 合成；
-- ``Data/Objects/*.fit``：机甲/物体定义（本模块不消费）。
+- ``Data/Objects/*.fit``：机甲/物体定义（FITini 文本，由 ``fit_parser`` 独立解析，
+  本模块不自动扫描——项目机甲 id 体系与 .fit Name 不同名）。
 
 匹配链：索引键为小写文件名 stem；resolve 按精确 stem → stem 包含关系
 （"awesome" 命中 "awesome1"、"madcat" 命中 "mcl_mc_madcat_a"，大小写不敏感）→ None
@@ -27,7 +28,8 @@ Wave V1 地形合成接口：
   选帧（同 seed 同结果，帧内确定性）；Cement 系列留作未来城镇地形不对外暴露；
 - ``resolve_environment(kind)``：``A_*`` 物件精灵，kind 经别名表（tree/jungle_tree/
   greenhouse/mech_wreck 等）→ ``_x``/``_dam`` 后缀派生 Dam/X 摧毁变体 → 包含匹配；
-- 机甲 ``resolve_mech_sprite`` 匹配链零改动。
+- 机甲 ``resolve_mech_sprite`` 匹配链零改动；damaged=True 时派生 dam/x 变体 stem
+  （Wave V2，未命中回退基名——官方真资产无机甲受损静态 TGA）。
 
 默认根目录（用户反馈：去掉路径门槛）：``default_pack_root()`` 按
 env ``PYMC2_MC2_ASSETS`` → ``~/.pymc2/mc2-assets`` 顺序探测候选（其余不做），
@@ -90,6 +92,12 @@ ENVIRONMENT_ALIASES: dict[str, str] = {
 # 摧毁/受损变体后缀：kind 以 _x/_dam 结尾时派生「基名+后缀」与「基名本身」两个候选
 # （a_pine&palm + x → a_pine&palmx；a_greenhouse + dam → a_greenhousedam）。
 ENVIRONMENT_VARIANT_SUFFIXES = ("_x", "_dam")
+
+# Wave V2 机甲受损变体：damaged=True 时按候选名直拼变体词派生（madcat → madcatdam /
+# madcatx，对齐 A_* 物件 X/Dam 命名约定）。远端官方资产无机甲受损静态 TGA（受损外观
+# 走 .ase 动画，见 docs/V2_DESIGN_20261119.md §1.1），派生命中依赖 fixture/未来资产，
+# 未命中回退基名候选链（渲染输出与现状一致）。
+MECH_DAMAGED_VARIANT_WORDS = ("dam", "x")
 
 
 def default_pack_root() -> Path | None:
@@ -162,8 +170,8 @@ class MC2AssetPack:
         self.tga_count = (
             len(sprites) + len(self._ground_tiles) + sum(len(frames) for frames in self._overlay_sequences.values())
         )  # pack 统计：成功索引的 TGA 数量
-        self._resolve_cache: dict[str, pygame.Surface | None] = {}
-        self._scaled_cache: dict[tuple[str, int], pygame.Surface | None] = {}
+        self._resolve_cache: dict[tuple[str, bool], pygame.Surface | None] = {}
+        self._scaled_cache: dict[tuple[str, bool, int], pygame.Surface | None] = {}
         self._ground_pools: dict[str, tuple[pygame.Surface, ...]] = {}
         self._ground_scaled_cache: dict[tuple[str, int, int], pygame.Surface | None] = {}
         self._env_resolve_cache: dict[str, pygame.Surface | None] = {}
@@ -216,23 +224,33 @@ class MC2AssetPack:
             return None
         return cls(base, sprites, ground_tiles, overlay_sequences)
 
-    def resolve_mech_sprite(self, chassis_kind: str) -> pygame.Surface | None:
-        """机甲模板/名 → 精灵：精确 stem → 包含匹配（大小写不敏感）→ None；结果缓存。"""
+    def resolve_mech_sprite(self, chassis_kind: str, *, damaged: bool = False) -> pygame.Surface | None:
+        """机甲模板/名 → 精灵：精确 stem → 包含匹配（大小写不敏感）→ None；结果缓存。
+
+        damaged=True（Wave V2）：候选名先派生受损变体（基名直拼 dam/x 变体词）进同一
+        匹配链，未命中回退基名候选（真资产无变体时输出与 damaged=False 一致）。
+        """
         key = chassis_kind.strip().lower()
         if not key:
             return None  # 空 kind：包含匹配会退化（"" 命中一切），直接回退程序化
-        if key in self._resolve_cache:
-            return self._resolve_cache[key]
-        sprite = self._lookup(_sprite_name_candidates(key))
-        self._resolve_cache[key] = sprite
+        cache_key = (key, damaged)
+        if cache_key in self._resolve_cache:
+            return self._resolve_cache[cache_key]
+        candidates = _sprite_name_candidates(key)
+        if damaged:
+            variants = tuple(name + word for name in candidates for word in MECH_DAMAGED_VARIANT_WORDS)
+            sprite = self._lookup(variants + candidates)
+        else:
+            sprite = self._lookup(candidates)
+        self._resolve_cache[cache_key] = sprite
         return sprite
 
-    def scaled_mech_sprite(self, chassis_kind: str, size_px: int) -> pygame.Surface | None:
-        """解析并缩放到目标尺寸（逐 (kind, size) 缓存，避免逐帧 smoothscale）。"""
-        cache_key = (chassis_kind.strip().lower(), size_px)
+    def scaled_mech_sprite(self, chassis_kind: str, size_px: int, *, damaged: bool = False) -> pygame.Surface | None:
+        """解析并缩放到目标尺寸（逐 (kind, damaged, size) 缓存，避免逐帧 smoothscale）。"""
+        cache_key = (chassis_kind.strip().lower(), damaged, size_px)
         if cache_key in self._scaled_cache:
             return self._scaled_cache[cache_key]
-        sprite = self.resolve_mech_sprite(chassis_kind)
+        sprite = self.resolve_mech_sprite(chassis_kind, damaged=damaged)
         scaled: pygame.Surface | None = sprite
         if sprite is not None and sprite.get_size() != (size_px, size_px):
             scaled = pygame.transform.smoothscale(sprite, (size_px, size_px))

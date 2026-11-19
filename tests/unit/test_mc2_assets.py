@@ -9,6 +9,8 @@ Wave V1 地形合成：ground/overlay/environment 三类索引、resolve_ground 
 （seed 取模、道路序列按帧号排序、Cement 城镇地形不暴露）、地面纹理 alpha 强制
 不透明（MC2 管线 alpha=高光通道）、overlay 原生 alpha 蒙版保留、resolve_environment
 别名 + _x/_dam 摧毁变体派生、ground-only pack 可加载。
+Wave V2 受损变体：resolve_mech_sprite damaged 参数（dam/x 变体词派生、未命中回退
+基名、(kind, damaged) 缓存分键、scaled 三元组缓存）。
 """
 
 from __future__ import annotations
@@ -24,6 +26,8 @@ from pymc2.infrastructure.mc2_assets import ASSETS_ENV_VAR, MC2AssetPack, defaul
 
 SIZE_PX = (32, 32)
 MADCAT_COLOR = (200, 40, 40, 255)
+MADCAT_DAM_COLOR = (120, 40, 30, 255)
+MADCAT_X_COLOR = (60, 30, 25, 255)
 THOR_COLOR = (40, 200, 80, 255)
 URBANMECH_COLOR = (60, 90, 220, 255)
 AWESOME_COLOR = (200, 160, 40, 255)
@@ -185,6 +189,74 @@ class TestScaledCache:
     def test_scaled_miss_returns_none(self, pack_root: Path) -> None:
         pack = MC2AssetPack.load(pack_root)
         assert pack.scaled_mech_sprite("zz-09", 16) is None
+
+
+class TestDamagedMechVariant:
+    """Wave V2 受损变体：damaged=True 派生 dam/x 变体 stem，未命中回退基名候选链。"""
+
+    @pytest.fixture()
+    def damaged_root(self, tmp_path: Path) -> Path:
+        """基名 + Dam/X 双变体 mini pack（真资产零入库）。"""
+        root = tmp_path / "mc2-damaged"
+        write_tga(root / "Data" / "TGL" / "128" / "MadCat.tga", MADCAT_COLOR)
+        write_tga(root / "Data" / "TGL" / "128" / "MadCatDam.tga", MADCAT_DAM_COLOR)
+        write_tga(root / "Data" / "TGL" / "128" / "MadCatX.tga", MADCAT_X_COLOR)
+        return root
+
+    def test_base_lookup_unchanged_by_variant_files(self, damaged_root: Path) -> None:
+        """damaged=False 保持基名链：变体文件在包内也不劫持基名解析。"""
+        pack = MC2AssetPack.load(damaged_root)
+        sprite = pack.resolve_mech_sprite("px-01")
+        assert sprite is not None
+        assert sprite.get_at((16, 16)) == MADCAT_COLOR
+
+    def test_damaged_hits_dam_stem_first(self, damaged_root: Path) -> None:
+        """damaged=True 先查变体词（dam 优先于 x）：命中 MadCatDam。"""
+        pack = MC2AssetPack.load(damaged_root)
+        sprite = pack.resolve_mech_sprite("px-01", damaged=True)
+        assert sprite is not None
+        assert sprite.get_at((16, 16)) == MADCAT_DAM_COLOR
+
+    def test_damaged_hits_x_stem_without_dam_file(self, tmp_path: Path) -> None:
+        """包内只有 X 变体：damaged=True 回退候选第二个变体词命中 MadCatX。"""
+        root = tmp_path / "mc2-x-only"
+        write_tga(root / "Data" / "TGL" / "128" / "MadCat.tga", MADCAT_COLOR)
+        write_tga(root / "Data" / "TGL" / "128" / "MadCatX.tga", MADCAT_X_COLOR)
+        pack = MC2AssetPack.load(root)
+        sprite = pack.resolve_mech_sprite("px-01", damaged=True)
+        assert sprite is not None
+        assert sprite.get_at((16, 16)) == MADCAT_X_COLOR
+
+    def test_damaged_falls_back_to_base_when_no_variant(self, pack_root: Path) -> None:
+        """无变体文件：damaged=True 与 damaged=False 返回同一基名精灵（回退语义）。"""
+        pack = MC2AssetPack.load(pack_root)
+        damaged = pack.resolve_mech_sprite("px-01", damaged=True)
+        base = pack.resolve_mech_sprite("px-01")
+        assert damaged is not None and damaged is base
+
+    def test_damaged_cache_isolated_from_base(self, damaged_root: Path) -> None:
+        """(kind, damaged) 分键缓存：先查 damaged 再查基名不串结果。"""
+        pack = MC2AssetPack.load(damaged_root)
+        damaged = pack.resolve_mech_sprite("px-01", damaged=True)
+        base = pack.resolve_mech_sprite("px-01")
+        assert damaged is not None and base is not None
+        assert damaged is pack.resolve_mech_sprite("px-01", damaged=True)
+        assert base is not damaged
+
+    def test_damaged_unknown_kind_returns_none(self, pack_root: Path) -> None:
+        pack = MC2AssetPack.load(pack_root)
+        assert pack.resolve_mech_sprite("zz-09", damaged=True) is None
+
+    def test_scaled_damaged_sprite_resized_and_cached(self, damaged_root: Path) -> None:
+        """scaled 带 damaged 维度：(kind, damaged, size) 三元组缓存互不污染。"""
+        pack = MC2AssetPack.load(damaged_root)
+        damaged = pack.scaled_mech_sprite("px-01", 16, damaged=True)
+        assert damaged is not None
+        assert damaged.get_size() == (16, 16)
+        assert damaged.get_at((8, 8)) == MADCAT_DAM_COLOR
+        assert pack.scaled_mech_sprite("px-01", 16, damaged=True) is damaged
+        base = pack.scaled_mech_sprite("px-01", 16)
+        assert base is not None and base is not damaged
 
 
 class TestDefaultPackRoot:

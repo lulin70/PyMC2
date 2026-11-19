@@ -118,3 +118,28 @@
   （CAMPAIGN COMPLETE）均走画面。文案 ASCII 对齐 HUD 提示行惯例。
   验收：unit 9 例（终局判定 3/文案 2/遮罩像素 1/等待循环事件驱动 3）；
   门禁全量 412 passed + ruff check/format + mypy（27 文件）全绿。
+
+## 交付后注记（2026-11-19）：Wave V2 机甲/物件状态（.fit 解析 + 受损变体渲染）
+
+- **设计文档**：[V2_DESIGN_20261119.md](docs/V2_DESIGN_20261119.md)（远端探测/解析器
+  设计/阈值决策/偏离与裁剪/实现记录全留痕）。
+- **远端探测结论**（videogamepreservation/mechcommander2 @ master，Trees API 全量
+  17753 项）：官方 Data/TGL/{128,256} **无机甲受损静态 TGA**（256 目录远端不存在；
+  128 仅 4 张 RGB 卡），受损外观走 .ase 动画（FallBackwardDam 等 3DSMAX 场景）——
+  静态 blit 管线不解析；Data/Objects 四机甲 .fit 为 FITini 文本（ASCII+CRLF），
+  `AppearanceName` 即精灵引用字段。
+- **.fit 最小解析器**（infrastructure/fit_parser.py）：只解析渲染相关六字段
+  （ObjectTypeNum/Name/AppearanceName 小写化/ExtentRadius/DestroyedObject/
+  ExplosionObject），[MechProfile] 战斗侧数值裁剪不解析；对真实四文件人工验证
+  输出正确；与 pack 零耦合（id 体系不同名，V3 候选做映射校准源）。
+- **受损变体渲染**：MC2AssetPack.resolve_mech_sprite/scaled_mech_sprite 增加
+  `damaged` 参数（dam/x 变体词派生 → 未命中回退基名，缓存 (kind,damaged[,size])
+  分键）；Renderer 新增模块常量 `MECH_DAMAGED_HULL_RATIO = 0.5`，hull_ratio ≤ 阈值
+  且存活切受损精灵，无资产包/无变体路径输出与现状逐像素一致；环境装饰不接受损态
+  （纯装饰无 HP 状态源，偏离记录于设计文档 §5）。
+- **下载范围**（仅本机缓存 ~/.pymc2/mc2-assets/，零入库）：Data/Objects/ 四机甲
+  .fit（urbanmech/thor/BMadCat/BJagermech）；TGA 零新增。
+- 验收：单测 18 例（fit_parser 11 + 受损变体索引 7）+ 集成 5 例（阈值 0.5 边界/
+  回退/无包程序化）+ e2e 1 条（真实战局满血基名 → 压血切变体 → 击毁残骸，截图
+  3 张存 docs/assets/uat_v2/）。
+  门禁：全量 436 passed / 0 failed + ruff format/check + mypy（28 文件）全绿。
