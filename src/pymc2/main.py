@@ -131,6 +131,10 @@ class Game:
     drag_current: tuple[float, float] | None = None
     frames: int = 0
     running: bool = True
+    # Wave V3 面板槽位内容：任务名 + RP（None=槽位不画；RP 每帧由 main 回写，
+    # grant_rp 触发器中途入账在面板可见）。
+    mission_id: str | None = None
+    requisition_points: int | None = None
 
 
 def create_game(
@@ -140,11 +144,14 @@ def create_game(
     commander: AiCommander | None = None,
     asset_pack: MC2AssetPack | None = None,
     demo_mode: bool = False,
+    mission_id: str | None = None,
+    requisition_points: int | None = None,
 ) -> Game:
     """组装一局战斗（service/commander/asset_pack 可注入以便测试固定随机源与 AI/资产开关）。
 
     自动交战接线：service.dispatcher 指向本局 dispatcher——BattleService.tick 产出的
     SELF 源自动交战指令与玩家/指挥官指令同源同路径（无需接线的直构战局保持关闭）。
+    mission_id/requisition_points：V3 面板槽位内容（默认 None → 槽位不画）。
     """
     game = Game(
         screen=screen,
@@ -152,6 +159,8 @@ def create_game(
         renderer=Renderer(screen, asset_pack=asset_pack),
         commander=commander,
         demo_mode=demo_mode,
+        mission_id=mission_id,
+        requisition_points=requisition_points,
     )
     game.service.dispatcher = game.dispatcher
     if asset_pack is not None:
@@ -375,6 +384,8 @@ def run_frame(game: Game, dt: float) -> None:
         drag_rect=drag_rect,
         auto_command=game.player_commander is not None,
         show_hints=not game.demo_mode,
+        mission_id=game.mission_id,
+        requisition_points=game.requisition_points,
     )
     pygame.display.flip()
     game.frames += 1
@@ -484,6 +495,7 @@ def main(argv: Sequence[str] = ()) -> int:
             if state.mission_index == 0:
                 engine.attach(battle)  # 示例脚本叙事对应首关（增援/RP 奖励/胜负）
             game = create_game(screen, service=battle, asset_pack=asset_pack, demo_mode=args.demo)
+            game.mission_id = mission.mission_id  # V3 面板任务名槽位
             while (
                 game.running
                 and context.outcome is None
@@ -493,6 +505,7 @@ def main(argv: Sequence[str] = ()) -> int:
                 if player_ai is not None:
                     player_ai.update(battle, game.dispatcher)
                 enemy_ai.update(battle, game.dispatcher)
+                game.requisition_points = state.requisition_points  # V3 面板 RP 槽位（每帧回写）
                 dt = min(clock.tick(60) / 1000.0, MAX_FRAME_DT_S)
                 run_frame(game, dt)
             if not game.running:

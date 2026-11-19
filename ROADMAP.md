@@ -155,3 +155,33 @@
 MC2 对齐说明：MC2 原版无真闪避（弹道即时命中），战术靠站位与火力纪律（.abl 脚本 +
 姿态系统）；上述三项均为超 MC2 的 RTS 常见行为，实现前需讨论默认开关（auto 默认 or
 按键切换）与 HOLD/托管语义交互。
+
+## 交付后注记（2026-11-20）：Wave V3 UI 面板（buttonlayout 布局 + MCUI 图集 + 动态文本槽位对齐）
+
+- **设计文档**：[V3_DESIGN_20261120.md](docs/V3_DESIGN_20261120.md)（远端探测/布局分区
+  分析/槽位对齐设计/偏离裁剪/实现记录全留痕）。
+- **远端探测结论**：buttonlayout 系列是 **.fit 布局定义文件而非整版贴图**（简报预期
+  偏差，5 个分辨率各一份 FITini 定位表）；面板画面拆在 MCUI_High* 图集（UV 取块）。
+  `buttonlayout1280.fit` 3412 行：[Statics] 23 部件（画布 1024×768 + HiresOffsets
+  居中/底锚）+ [Button*]/[MechIcon*]/[ResourcePoints]/[HelpText] 等。
+- **下载范围**（仅本机缓存 ~/.pymc2/mc2-assets/Data/Art/，零入库）：buttonlayout1280.fit
+  + MCUI_High1/High3/High9/High11 + A_Compass_Small，共 6 文件（PIL 验证尺寸/alpha）。
+- **UI 面板渲染**：mc2_assets 新增 `parse_fit_sections`（最小 FITini 段解析）+
+  `MC2AssetPack.button_layout`（lazy 缓存，[Statics]+[ResourcePoints]+[HelpText] →
+  `ButtonLayout`：部件 UV 裁切 + 画布 bbox + 文本槽位锚点；零尺寸/缺图集/越界逐件
+  跳过，fit 缺失 → None）；Renderer 按布局 bbox 预合成单张面板（每帧 1 blit），
+  `panel_base_offset` 对齐原版 HiresOffsets 语义（1280×720 → (128,−48) 底边锚定）。
+- **动态文本槽位**（程序化 _font，ASCII）：RP 槽（官方 [ResourcePoints] 锚点）、
+  任务/托管条（compalette top：`M:<id> | AUTO: ON | +N`）、dropteam 选中机甲前 4 槽
+  （id/FIRE 姿态/HULL+HEAT，官方 Static10 锚点 stride=160）、键位提示（[HelpText]
+  底对齐——面板模式下提示行收进面板）；`render()/create_game/Game` 新增可选
+  mission_id/requisition_points（默认 None 存量调用零改动）。
+- **回退**：无资产包/包无 fit/零部件零解析 → 完全走现有 _draw_hud（e2e 全图字节
+  比对与无包渲染一致）。
+- **裁剪**（详见设计文档 §5）：命令按钮/机甲图标/托盘/光标图集不下载不绘制（无
+  点击交互语义，留后续）；移动/攻击标记图标替换不做（Cursors 系列是屏幕空间鼠标
+  光标，非世界空间标记）；选中 >4 台只显示 4 dropteam 槽 + 计数并入任务条。
+- 验收：单测 13 例（fit 解析/布局构建/pack lazy/偏移数学/面板像素与回退字节一致）
+  + e2e 1 文件 2 用例（真实战局 4 步槽位切片 + 回退字节比对），截图 5 张存
+  docs/assets/uat_v3/。
+  门禁：全量 454 passed / 0 failed + ruff format/check + mypy（28 文件）全绿。

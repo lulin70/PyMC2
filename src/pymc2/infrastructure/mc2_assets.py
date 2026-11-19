@@ -9,6 +9,10 @@
 - ``Data/TGL/256/*.tga`` / ``Data/TGL/128/*.tga``：对象精灵（约 2300 张，256 优先取高清版），
   含机甲精灵与 ``A_*`` 环境物件精灵（真 alpha 抠图）；
 - ``Data/Art/MCL_MC_{MadCat,Thor,UrbanMech,Jaegermech}_{A,B}.tga``：机甲立绘；
+- ``Data/Art/MCUI_*.tga``：UI 图集（Wave V3）——底部面板框架部件的 UV 取块源；
+- ``Data/Art/buttonlayout1280.fit``：in-game UI 布局定义（FITini 文本，Wave V3）——
+  ``[Statics]`` 部件定位（画布坐标 + 图集 UV 取块）与 ``[ResourcePoints]/[HelpText]``
+  文本槽位；只解析面板渲染消费的段落，按钮/图标段落不解析（无点击交互语义）；
 - ``Data/Textures/64/*.tga``：地面基础纹理（Wave V1）——**alpha 通道是高光/细节
   通道而非透明度**（Water_ocean 全 0、Detail 系列约 48，均非抠图），加载时强制
   置不透明，否则按 alpha 合成会近全黑；
@@ -41,6 +45,7 @@ from __future__ import annotations
 
 import os
 import re
+from dataclasses import dataclass
 from pathlib import Path
 
 import pygame
@@ -98,6 +103,151 @@ ENVIRONMENT_VARIANT_SUFFIXES = ("_x", "_dam")
 # 走 .ase 动画，见 docs/V2_DESIGN_20261119.md §1.1），派生命中依赖 fixture/未来资产，
 # 未命中回退基名候选链（渲染输出与现状一致）。
 MECH_DAMAGED_VARIANT_WORDS = ("dam", "x")
+
+# Wave V3 UI 面板：buttonlayout1280.fit（相对 Data/ 的布局定义路径）与解析参数。
+# 官方布局设计画布 1024×768（[HiresOffsets] 在 1280 宽屏下 x+128 居中、底边锚定）。
+BUTTON_LAYOUT_FIT_RELPATH = Path("Art/buttonlayout1280.fit")
+_BUTTON_SECTION_RE = re.compile(r"^\[(\w+)\]")
+_BUTTON_ENTRY_RE = re.compile(r"^(?:l|st)\s+(\w+)\s*=\s*(.*)$")
+_BUTTON_STATIC_PREFIX = "Static"
+_DROPTEAM_FIRST = "Static10"  # 首个 dropteam palette（选中机甲槽位锚点）
+_DROPTEAM_SECOND = "Static11"  # 相邻槽位（推算 stride）
+
+
+@dataclass(frozen=True)
+class PanelPiece:
+    """面板部件：画布坐标 dest（可负，xtra 补边越出基础画布）+ 图集 UV 裁切面。"""
+
+    name: str
+    dest: tuple[int, int]
+    surface: pygame.Surface
+
+
+@dataclass(frozen=True)
+class ButtonLayout:
+    """buttonlayout .fit 解析结果：面板部件集 + 文本槽位锚点（画布坐标）。
+
+    pieces 空元组视为解析失败（渲染层回退现状 HUD）；canvas_origin/size 为部件
+    bbox（预合成画布）；dropteam_origin 为首个 palette 槽位、stride 为相邻槽位
+    x 间距（缺锚点时槽位为 None，渲染层逐槽跳过）。
+    """
+
+    pieces: tuple[PanelPiece, ...]
+    canvas_origin: tuple[int, int]
+    canvas_size: tuple[int, int]
+    rp_text_pos: tuple[int, int] | None
+    help_text_pos: tuple[int, int] | None
+    dropteam_origin: tuple[int, int] | None
+    dropteam_stride: int
+    compalette_top_pos: tuple[int, int] | None
+
+
+def parse_fit_sections(text: str) -> dict[str, dict[str, int | str]]:
+    """FITini 文本 → 扁平段字典（段名 → 键值表）；只取面板消费的 l/st 两类字段。
+
+    ``//`` 注释剥离、空行跳过；值尽量转 int（含 0x 十六进制），失败保留去引号
+    字符串；非 l/st 前缀行（b 布尔等）忽略。任何输入都不抛错（坏行逐条跳过）。
+    """
+    sections: dict[str, dict[str, int | str]] = {}
+    current: dict[str, int | str] | None = None
+    for raw_line in text.splitlines():
+        line = raw_line.split("//", 1)[0].strip()
+        if not line:
+            continue
+        section_match = _BUTTON_SECTION_RE.match(line)
+        if section_match is not None:
+            current = {}
+            sections[section_match.group(1)] = current
+            continue
+        if current is None:
+            continue
+        entry_match = _BUTTON_ENTRY_RE.match(line)
+        if entry_match is None:
+            continue
+        key, raw_value = entry_match.group(1), entry_match.group(2).strip()
+        try:
+            current[key] = int(raw_value, 0)
+        except ValueError:
+            current[key] = raw_value.strip('"')
+    return sections
+
+
+def _static_sections(sections: dict[str, dict[str, int | str]]) -> list[dict[str, int | str]]:
+    """按 Static0..N 连续编号收集静态部件段（官方布局编号无空洞，遇缺即止）。"""
+    result: list[dict[str, int | str]] = []
+    index = 0
+    while True:
+        section = sections.get(f"{_BUTTON_STATIC_PREFIX}{index}")
+        if section is None:
+            return result
+        result.append(section)
+        index += 1
+
+
+def _section_pos(section: dict[str, int | str], x_key: str, y_key: str) -> tuple[int, int] | None:
+    """段内两个坐标键 → 整数二元组；缺任一键返回 None。"""
+    x_value, y_value = section.get(x_key), section.get(y_key)
+    if isinstance(x_value, int) and isinstance(y_value, int):
+        return (x_value, y_value)
+    return None
+
+
+def _build_button_layout(
+    sections: dict[str, dict[str, int | str]],
+    sheets: dict[str, pygame.Surface],
+) -> ButtonLayout | None:
+    """布局段字典 + 图集索引 → ButtonLayout；零部件不可解析 → None（渲染层回退）。
+
+    部件级容错：零尺寸/缺 FileName/图集未命中/UV 越界逐个跳过；FileName 归一化
+    （剥 ``.tga`` 后缀 + 小写）对齐官方布局里的大小写混排引用。"""
+    pieces: list[PanelPiece] = []
+    for index, section in enumerate(_static_sections(sections)):
+        width, height = section.get("Width"), section.get("Height")
+        file_name = section.get("FileName")
+        dest = _section_pos(section, "XLocation", "YLocation")
+        if not isinstance(width, int) or not isinstance(height, int) or width <= 0 or height <= 0:
+            continue
+        if not isinstance(file_name, str) or dest is None:
+            continue
+        stem = file_name.lower().removesuffix(".tga")
+        sheet = sheets.get(stem)
+        if sheet is None:
+            continue
+        u, v = section.get("UNormal", 0), section.get("VNormal", 0)
+        u_width = section.get("UWidth", width)
+        v_height = section.get("VHeight", height)
+        if not isinstance(u, int) or not isinstance(v, int):
+            continue
+        if not isinstance(u_width, int) or not isinstance(v_height, int):
+            continue
+        area = pygame.Rect(u, v, u_width, v_height).clip(pygame.Rect(0, 0, sheet.get_width(), sheet.get_height()))
+        if area.width <= 0 or area.height <= 0:
+            continue
+        pieces.append(PanelPiece(name=f"{_BUTTON_STATIC_PREFIX}{index}", dest=dest, surface=sheet.subsurface(area)))
+    if not pieces:
+        return None
+    xs = [piece.dest[0] for piece in pieces]
+    ys = [piece.dest[1] for piece in pieces]
+    min_x, min_y = min(xs), min(ys)
+    canvas_size = (
+        max(x + piece.surface.get_width() for x, piece in zip(xs, pieces, strict=True)) - min_x,
+        max(y + piece.surface.get_height() for y, piece in zip(ys, pieces, strict=True)) - min_y,
+    )
+    dropteam_origin = _section_pos(sections.get(_DROPTEAM_FIRST, {}), "XLocation", "YLocation")
+    stride = 160
+    second = _section_pos(sections.get(_DROPTEAM_SECOND, {}), "XLocation", "YLocation")
+    if dropteam_origin is not None and second is not None:
+        stride = second[0] - dropteam_origin[0]
+    return ButtonLayout(
+        pieces=tuple(pieces),
+        canvas_origin=(min_x, min_y),
+        canvas_size=canvas_size,
+        rp_text_pos=_section_pos(sections.get("ResourcePoints", {}), "RPTextLeft", "RPTextTop"),
+        help_text_pos=_section_pos(sections.get("HelpText", {}), "HelpTextLeft", "HelpTextBottom"),
+        dropteam_origin=dropteam_origin,
+        dropteam_stride=stride,
+        compalette_top_pos=_section_pos(sections.get("Static8", {}), "XLocation", "YLocation"),
+    )
 
 
 def default_pack_root() -> Path | None:
@@ -176,6 +326,8 @@ class MC2AssetPack:
         self._ground_scaled_cache: dict[tuple[str, int, int], pygame.Surface | None] = {}
         self._env_resolve_cache: dict[str, pygame.Surface | None] = {}
         self._env_scaled_cache: dict[tuple[str, int], pygame.Surface | None] = {}
+        self._button_layout: ButtonLayout | None = None
+        self._button_layout_loaded = False
 
     @classmethod
     def load(cls, root: Path | str) -> MC2AssetPack | None:
@@ -273,6 +425,22 @@ class MC2AssetPack:
     def has_ground_assets(self) -> bool:
         """是否收录地面/覆盖资产（渲染层据此切换纹理地形与程序化色块）。"""
         return bool(self._ground_tiles) or bool(self._overlay_sequences)
+
+    @property
+    def button_layout(self) -> ButtonLayout | None:
+        """buttonlayout1280.fit 解析结果（lazy 缓存）：布局缺失/零部件零解析 → None。
+
+        图集查找走 _sprites 索引（Data/Art 扫描既有收录 MCUI_* 图集）；结果缓存
+        （fit 文件与图集在 pack 生命周期内不变，重复访问零开销）。"""
+        if self._button_layout_loaded:
+            return self._button_layout
+        self._button_layout_loaded = True
+        fit_path = self.root / "Data" / BUTTON_LAYOUT_FIT_RELPATH
+        if not fit_path.is_file():
+            return None
+        sections = parse_fit_sections(fit_path.read_text(encoding="utf-8", errors="replace"))
+        self._button_layout = _build_button_layout(sections, self._sprites)
+        return self._button_layout
 
     def ground_pool(self, terrain_kind: str) -> tuple[pygame.Surface, ...]:
         """terrain_kind → 候选纹理元组（grass=Detail 系列 / road=2lanedirt 按帧号 /

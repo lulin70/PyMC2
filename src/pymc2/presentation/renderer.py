@@ -8,7 +8,12 @@
 - 环境点缀：``plan_decorations`` 确定性撒点 + ``set_decorations`` 注入，非道路
   空 tile 撒树/房精灵，纯装饰不阻挡移动不参与命中（对齐让路协商语义）；
 - Wave V2 机甲受损变体：``MECH_DAMAGED_HULL_RATIO`` 以下存活机甲改用 damaged 精灵
-  （资产包变体派生，未命中回退基名精灵），无资产包路径渲染输出零改动。
+  （资产包变体派生，未命中回退基名精灵），无资产包路径渲染输出零改动；
+- Wave V3 UI 面板：pack 含 ``buttonlayout1280.fit`` + MCUI 图集时，按官方布局
+  （[Statics] 部件 dest + UV 取块）预合成底部面板，画布→屏幕偏移 ``panel_base_offset``
+  （水平居中 + 底边锚定，对齐原版 HiresOffsets 语义）；动态信息按官方文本槽位对齐
+  绘制程序化文字（RP/任务与托管/dropteam 选中机甲槽/键位提示），布局缺失或零部件
+  零解析时完全回退现状 HUD（逐字节不变）。
 未注入或未命中时保持原色块输出，渲染结果与未加载资产完全一致。
 """
 
@@ -48,6 +53,24 @@ _HEALTH_BAR_HEIGHT = 4
 # Wave V2 机甲受损变体：hull_ratio ≤ 阈值且存活 → 请求 MC2 资产受损精灵（damaged
 # 变体 stem 派生，未命中回退基名精灵；无资产包时本常量不参与任何路径，渲染零改动）。
 MECH_DAMAGED_HULL_RATIO = 0.5
+
+# Wave V3 UI 面板：buttonlayout1280.fit 官方设计画布 1024×768（布局坐标的参照系）。
+PANEL_FIT_CANVAS = (1024, 768)
+# 面板槽位文本行距/边距（_font 16px 观感校准，dropteam palette 149px 高容纳 3 行）。
+_PANEL_SLOT_PAD_X = 8
+_PANEL_SLOT_PAD_Y = 6
+_PANEL_LINE_STEP = 15
+_DROPTEAM_SLOT_COUNT = 4  # 原版 4 dropteam：选中机甲最多占 4 个槽位
+
+
+def panel_base_offset(screen_size: tuple[int, int]) -> tuple[int, int]:
+    """buttonlayout1280.fit 画布坐标 → 屏幕坐标的全局偏移（Wave V3）。
+
+    对齐原版 [HiresOffsets] 语义：水平居中（(w−1024)//2）+ 底边锚定（h−768）。
+    1280×720 → (128, −48)：面板底边贴窗口底边。"""
+    width, height = screen_size
+    return ((width - PANEL_FIT_CANVAS[0]) // 2, height - PANEL_FIT_CANVAS[1])
+
 
 # Wave V1 地形合成：2lanedirt 序列帧语义（按边缘连通性勘测）——0000=竖直直道
 # （上下连通）、0001=水平直道（左右连通）、0002-0005=四向弯道（本图无弯道段，
@@ -178,6 +201,11 @@ class Renderer:
             self._font = pygame.font.Font(None, 16)
         except Exception:  # noqa: BLE001 - 无字体环境下降级为无标签
             self._font = None
+        # Wave V3 UI 面板：布局/部件在 __init__ 一次性预合成（布局坐标随资产固定，
+        # 不随帧变化）；panel_offset 随窗口尺寸计算（1280×720 → (128, −48)）。
+        self._layout = self._assets.button_layout if self._assets is not None else None
+        self._panel = self._build_panel_surface()
+        self._panel_offset = panel_base_offset(self.screen.get_size())
 
     def draw_settlement_overlay(self, title: str, lines: Sequence[str]) -> None:
         """任务结算遮罩层：半透明黑底 + 居中标题/摘要行（窗口内结算呈现）。
@@ -278,11 +306,15 @@ class Renderer:
         drag_rect: tuple[float, float, float, float] | None = None,
         auto_command: bool = False,
         show_hints: bool = True,
+        mission_id: str | None = None,
+        requisition_points: int | None = None,
     ) -> None:
-        """绘制一帧：地形 → 移动标记 → 弹丸 → 机甲（按 y 排序，血条/选中框）→ 攻击高亮 → 框选矩形 → HUD。
+        """绘制一帧：地形 → 移动标记 → 弹丸 → 机甲（按 y 排序，血条/选中框）→ 攻击高亮 → 框选矩形 → UI。
 
-        auto_command：托管激活时状态行追加 ``AUTO: ON``；show_hints：追加键位提示
-        （``--demo`` 自动演示传 False——A 托管提示对无人交互模式无意义）。
+        auto_command：托管激活时状态行/任务条追加 ``AUTO: ON``；show_hints：追加键位
+        提示（``--demo`` 自动演示传 False——A 托管提示对无人交互模式无意义）；
+        mission_id/requisition_points：V3 面板槽位内容（默认 None → 槽位不画，存量
+        调用零改动）。面板可用时槽位化呈现，否则维持现状 HUD（逐字节不变）。
         """
         self.screen.fill(_GRASS_BASE)
         self.screen.blit(self._terrain, (-int(cam_x), -int(cam_y)))
@@ -305,7 +337,105 @@ class Renderer:
                 self._draw_attack_mark(target, cam_x, cam_y)
         if drag_rect is not None:
             self._draw_drag_rect(drag_rect, cam_x, cam_y)
-        self._draw_hud(service, auto_command=auto_command, show_hints=show_hints)
+        if self._panel is not None and self._layout is not None:
+            self._draw_panel(
+                service,
+                auto_command=auto_command,
+                show_hints=show_hints,
+                mission_id=mission_id,
+                requisition_points=requisition_points,
+            )
+        else:
+            self._draw_hud(service, auto_command=auto_command, show_hints=show_hints)
+
+    def _build_panel_surface(self) -> pygame.Surface | None:
+        """按布局 bbox 预合成整块面板（Wave V3，每帧 1 blit）：部件逐个 blit 到
+        bbox 局部坐标（负 dest 补边合法）；布局缺失时返回 None（回退现状 HUD）。"""
+        if self._layout is None or not self._layout.pieces:
+            return None
+        origin_x, origin_y = self._layout.canvas_origin
+        surface = pygame.Surface(self._layout.canvas_size, pygame.SRCALPHA)
+        for piece in self._layout.pieces:
+            surface.blit(piece.surface, (piece.dest[0] - origin_x, piece.dest[1] - origin_y))
+        return surface
+
+    def _panel_pos(self, base_x: int, base_y: int) -> tuple[int, int]:
+        """画布坐标 → 屏幕坐标（全局偏移，槽位文字与面板同一参照系）。"""
+        return (self._panel_offset[0] + base_x, self._panel_offset[1] + base_y)
+
+    def _draw_panel(
+        self,
+        service: BattleService,
+        *,
+        auto_command: bool,
+        show_hints: bool,
+        mission_id: str | None,
+        requisition_points: int | None,
+    ) -> None:
+        """MC2 底部面板（Wave V3）：整块预合成贴图 + 官方文本槽位对齐的程序化文字。
+
+        RP 槽位（[ResourcePoints]）、任务/托管条（compalette top）、dropteam 选中机甲
+        槽（前 4 台）、键位提示槽（[HelpText] 底对齐）。字体缺失时只贴面板不画文字。"""
+        layout, panel = self._layout, self._panel
+        if layout is None or panel is None:
+            return
+        origin_x, origin_y = layout.canvas_origin
+        self.screen.blit(panel, (self._panel_offset[0] + origin_x, self._panel_offset[1] + origin_y))
+        if self._font is None:
+            return
+        # dropteam 槽位：选中机甲前 4 台逐槽 3 行（id / 火力姿态 / hull+heat）。
+        selected_mechs = [mech for uid in service.selected_ids if (mech := service.get(uid)) is not None]
+        if layout.dropteam_origin is not None:
+            base_x, base_y = layout.dropteam_origin
+            for index, mech in enumerate(selected_mechs[:_DROPTEAM_SLOT_COUNT]):
+                slot_x, slot_y = self._panel_pos(base_x + index * layout.dropteam_stride, base_y)
+                heat_text = f"{mech.heat.heat:.0f}"
+                if mech.heat.shutdown_active:
+                    heat_text += " SHUTDOWN"
+                lines = (
+                    mech.id,
+                    f"FIRE {self._stance_text(mech)}",
+                    f"HULL {mech.hull_ratio * 100:.0f}% HEAT {heat_text}",
+                )
+                for line_index, line in enumerate(lines):
+                    self.screen.blit(
+                        self._font.render(line, True, _LABEL_COLOR),
+                        (slot_x + _PANEL_SLOT_PAD_X, slot_y + _PANEL_SLOT_PAD_Y + line_index * _PANEL_LINE_STEP),
+                    )
+        # 任务/托管条：compalette top 槽位（任务名 + AUTO + 超额选中计数）。
+        strip_parts: list[str] = []
+        if mission_id:
+            strip_parts.append(f"M:{mission_id}")
+        if auto_command:
+            strip_parts.append("AUTO: ON")
+        if len(selected_mechs) > _DROPTEAM_SLOT_COUNT:
+            strip_parts.append(f"+{len(selected_mechs) - _DROPTEAM_SLOT_COUNT}")
+        if strip_parts and layout.compalette_top_pos is not None:
+            strip_x, strip_y = self._panel_pos(*layout.compalette_top_pos)
+            self.screen.blit(
+                self._font.render(" | ".join(strip_parts), True, _LABEL_COLOR),
+                (strip_x + _PANEL_SLOT_PAD_X, strip_y + 1),
+            )
+        # RP 槽位：[ResourcePoints] 锚点（RP 未注入则不画）。
+        if requisition_points is not None and layout.rp_text_pos is not None:
+            rp_x, rp_y = self._panel_pos(*layout.rp_text_pos)
+            self.screen.blit(
+                self._font.render(f"RP: {requisition_points}", True, _LABEL_COLOR),
+                (rp_x, rp_y),
+            )
+        # 键位提示槽位：[HelpText] 底对齐锚点（show_hints 才画；面板模式提示收进面板）。
+        if show_hints and layout.help_text_pos is not None:
+            help_x, help_bottom = self._panel_pos(*layout.help_text_pos)
+            hint = self._font.render("MOVE: ARROWS/W S D | FIRE: F | AUTO: A", True, _LABEL_COLOR)
+            self.screen.blit(hint, (help_x, help_bottom - hint.get_height()))
+
+    @staticmethod
+    def _stance_text(mech: Mech) -> str:
+        """火力姿态文本（HUD 状态行与面板 dropteam 槽位共用，含警戒后缀）。"""
+        stance = mech.fire_mode.value.upper()
+        if mech.guarding:
+            stance += "+GUARD"
+        return stance
 
     def _draw_mech(self, mech: Mech, cam_x: float, cam_y: float, *, selected: bool) -> None:
         sx, sy = self.world_to_screen(mech.x, mech.y, cam_x, cam_y)
@@ -404,9 +534,7 @@ class Renderer:
             stance = "-"
             heat_text = ""
         else:
-            stance = primary.fire_mode.value.upper()
-            if primary.guarding:
-                stance += "+GUARD"
+            stance = self._stance_text(primary)
             heat_text = f" | HEAT: {primary.heat.heat:.0f}"
             if primary.heat.shutdown_active:
                 heat_text += " [SHUTDOWN]"
