@@ -1,7 +1,7 @@
-"""键盘操控 + A 键托管 e2e（dummy 驱动 + event.post 走真实输入路径）。
+"""键盘操控 + Q 键托管 e2e（dummy 驱动 + event.post 走真实输入路径）。
 
-用户反馈两项验收链路：框选 → 方向键/W S D 编队移动（KEYBOARD_MOVE_TILES=5）→
-A 托管（玩家侧 AiCommander 接管：COMMANDER 源指令下发、自主交战）→ 再按 A 解除
+用户反馈两项验收链路：框选 → 方向键/WASD 编队移动（KEYBOARD_MOVE_TILES=5）→
+Q 托管（玩家侧 AiCommander 接管：COMMANDER 源指令下发、自主交战）→ 再按 Q 解除
 （无新 COMMANDER 指令，已下发指令执行完自然停止）。敌方机甲出生点外移至 tile
 (24,10)（武器射程外）：先按 F 转 HOLD 冻结玩家火力，保证托管验收时敌机甲存活、
 AI 的 ATTACK_OBJECT 指令真实入账（恢复 FREE 后自主交战落地）。截图存
@@ -138,9 +138,9 @@ def test_keyboard_move_and_auto_command_chain(game: main_module.Game) -> None:
             break
     assert player_a.tile == (11, 10) and player_b.tile == (13, 10)
 
-    # --- 步骤 3：A 托管 ON——玩家侧 AiCommander 接管，COMMANDER 源指令下发 ---
+    # --- 步骤 3：Q 托管 ON——玩家侧 AiCommander 接管，COMMANDER 源指令下发 ---
     toggle_on_index = len(game.dispatcher.order_log)
-    post_key(pygame.K_a)
+    post_key(pygame.K_q)
     main_module.run_frame(game, 1 / 60)
     assert game.player_commander is not None
     assert game.player_commander.faction is Faction.PLAYER
@@ -165,7 +165,7 @@ def test_keyboard_move_and_auto_command_chain(game: main_module.Game) -> None:
 
     # --- 步骤 5：A 托管 OFF——此后零玩家侧 COMMANDER 指令（敌方 AI 仍不越界）---
     toggle_off_index = len(game.dispatcher.order_log)
-    post_key(pygame.K_a)
+    post_key(pygame.K_q)
     main_module.run_frame(game, 1 / 60)
     assert game.player_commander is None
     for _ in range(45):
@@ -185,7 +185,7 @@ def test_keyboard_move_and_auto_command_chain(game: main_module.Game) -> None:
 def test_auto_command_key_noop_in_demo_mode(game: main_module.Game) -> None:
     """--demo 双侧 AI 已就位：A 键托管无效（不挂玩家侧指挥官、不改写既有决策回路）。"""
     game.demo_mode = True
-    post_key(pygame.K_a)
+    post_key(pygame.K_q)
     main_module.run_frame(game, 1 / 60)
     assert game.player_commander is None
     for _ in range(35):

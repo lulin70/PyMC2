@@ -11,11 +11,12 @@
 - 默认 = **交互模式**：真人可玩。玩家侧机甲不经 AiCommander（框选/右键移动/
   F 火力姿态走既有 handle_event 输入链路，指令 origin=PLAYER 经
   OrderDispatcher 下发；开火交给自动交战），敌方保留 AiCommander goal 分解；
-  键盘操控（用户反馈：Mac 上鼠标移动不便）：方向键/W/S/D 选中组沿方向移动
-  KEYBOARD_MOVE_TILES 格（编队平行偏移），A 键托管开关（挂上/解除玩家侧
-  AiCommander，辅助决策语义：手动指令覆盖 AI，下一决策周期 AI 可能重新接管）；
+  键盘操控（用户反馈：Mac 上鼠标移动不便）：方向键/WASD 选中组沿方向移动
+  KEYBOARD_MOVE_TILES 格（编队平行偏移；单击一段、长按连续续段），Q 键托管
+  开关（挂上/解除玩家侧 AiCommander，辅助决策语义：手动指令覆盖 AI，
+  下一决策周期 AI 可能重新接管）；
 - ``--demo`` = 双侧 AI 自动演示（原 main 行为）：玩家侧也由 AiCommander 指挥
-  （A 键托管无效）。
+  （Q 键托管无效）。
 
 两种模式均沿用 M5 任务链 + 首关任务脚本 + 结算/整备文本摘要。
 MC2 资产默认自动发现（env ``PYMC2_MC2_ASSETS`` → ``~/.pymc2/mc2-assets``），
@@ -53,9 +54,10 @@ from pymc2.services.order_dispatcher import OrderDispatcher
 from pymc2.services.refit_service import HIRE_COST_RP, RefitService
 
 FIRE_MODE_KEY = pygame.K_f
-AUTO_COMMAND_KEY = pygame.K_a  # 托管开关（交互模式专属；--demo 双侧 AI 已就位，无效）
+AUTO_COMMAND_KEY = pygame.K_q  # 托管开关（用户反馈：Q 键，A 回归左移；交互模式专属；--demo 双侧 AI 已就位，无效）
 # 键盘移动键位（用户反馈：Mac 上鼠标移动操作不便）：方向键四方向全支持；
-# 字母区仅 W/S/D——A 归托管开关，左移依赖方向键 ←（README 键位表同步说明）。
+# WASD 全向（Q 键托管让出 A 后四键齐备）。KEYDOWN 触发单击一段；
+# 长按由 run_frame 每帧轮询续段（_poll_held_move）。
 MOVE_KEY_DIRECTIONS: dict[int, tuple[int, int]] = {
     pygame.K_UP: (0, -1),
     pygame.K_DOWN: (0, 1),
@@ -63,6 +65,7 @@ MOVE_KEY_DIRECTIONS: dict[int, tuple[int, int]] = {
     pygame.K_RIGHT: (1, 0),
     pygame.K_w: (0, -1),
     pygame.K_s: (0, 1),
+    pygame.K_a: (-1, 0),
     pygame.K_d: (1, 0),
 }
 KEYBOARD_MOVE_TILES = 5  # 单次按键沿方向移动的格数（模块常量，可调）
@@ -124,8 +127,8 @@ class Game:
     renderer: Renderer
     dispatcher: OrderDispatcher = field(default_factory=OrderDispatcher)
     commander: AiCommander | None = None  # M4：注入则启用 AI 指挥官决策循环
-    player_commander: AiCommander | None = None  # A 键托管：玩家侧 AI 指挥官（None=真人手操）
-    demo_mode: bool = False  # --demo 标记：A 键托管无效（双侧 AI 已就位）
+    player_commander: AiCommander | None = None  # Q 键托管：玩家侧 AI 指挥官（None=真人手操）
+    demo_mode: bool = False  # --demo 标记：Q 键托管无效（双侧 AI 已就位）
     camera: Camera = field(default_factory=Camera)
     drag_start: tuple[float, float] | None = None
     drag_current: tuple[float, float] | None = None
@@ -258,7 +261,7 @@ def _cycle_fire_mode(game: Game) -> None:
 
 
 def _toggle_auto_command(game: Game) -> None:
-    """A 键托管（交互模式专属）：挂上/解除玩家侧 AiCommander（goal 分解：后撤>集火>占区）。
+    """Q 键托管（交互模式专属）：挂上/解除玩家侧 AiCommander（goal 分解：后撤>集火>占区）。
 
     解除不清除已下发指令——移动/攻击执行完自然停止；托管期间手动指令仍可下达
     （辅助决策语义：指令覆盖 AI 决策，下一决策周期 AI 可能重新接管）。
@@ -362,13 +365,31 @@ def handle_event(game: Game, event: pygame.event.Event) -> None:
             _dispatch_formation_move(game.service, game.dispatcher, dx, dy)
 
 
+def _poll_held_move(game: Game) -> None:
+    """长按连续移动（用户反馈：按一次只走一段太短）：每帧轮询按住的移动键续段。
+
+    语义：主选中机甲上一段走完（move_target 为空）且移动键仍按住 → 立即续发
+    下一段（编队平行偏移，与单击同函数同语义）——按住期间段间无缝，松开即停。
+    单击路径仍走 handle_event KEYDOWN（按下首帧轮询因目标未空自动跳过，不重发）。
+    """
+    primary = game.service.selected
+    if primary is None or primary.move_target is not None:
+        return
+    pressed = pygame.key.get_pressed()
+    for key, (dx, dy) in MOVE_KEY_DIRECTIONS.items():
+        if pressed[key]:
+            _dispatch_formation_move(game.service, game.dispatcher, dx, dy)
+            return
+
+
 def run_frame(game: Game, dt: float) -> None:
     """处理输入、推进一帧并渲染。"""
     for event in pygame.event.get():
         handle_event(game, event)
+    _poll_held_move(game)
     if game.commander is not None:
         game.commander.update(game.service, game.dispatcher)
-    if game.player_commander is not None:  # A 键托管：玩家侧 AI 与敌方 AI 同源同路径
+    if game.player_commander is not None:  # Q 键托管：玩家侧 AI 与敌方 AI 同源同路径
         game.player_commander.update(game.service, game.dispatcher)
     game.service.tick(dt)
     update_camera(game)

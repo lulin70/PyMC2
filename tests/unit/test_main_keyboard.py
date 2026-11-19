@@ -1,16 +1,19 @@
-"""键盘操控（用户反馈：Mac 上鼠标移动操作不便）+ A 键托管 单元测试。
+"""键盘操控（用户反馈：Mac 上鼠标移动操作不便）+ Q 键托管 单元测试。
 
 - 键盘移动：_dispatch_formation_move 走服务层真路径（BattleService +
   OrderDispatcher，无 pygame 显示依赖）——每机自身 tile + 方向×KEYBOARD_MOVE_TILES
   平行平移；堆叠同 tile 目标撞点时横向逐格错开；越界钳制；无选中/阵亡不下发。
-- 键位表：方向键四方向 + W/S/D（A 归托管开关，左移依赖方向键 ←）。
-- A 键托管：交互模式切换 AiCommander(PLAYER) on/off；demo_mode=True 时无效。
+- 键位表：方向键四方向 + WASD 全向（Q 归托管开关）。
+- 长按连续移动：_poll_held_move 每帧轮询——按住且上一段走完续发下一段，
+  段中不重发，无按键不动（用户反馈：单击只走一段太短）。
+- Q 键托管：交互模式切换 AiCommander(PLAYER) on/off；demo_mode=True 时无效。
 - HUD：AUTO: ON 与键位提示按 render 参数追加（捕获 font.render 文本断言）。
 """
 
 from __future__ import annotations
 
 import pygame
+import pytest
 
 import pymc2.main as main_module
 from pymc2.domain.entities.mech import MAP_TILES, TILE_SIZE_PX, Faction, Mech, Weapon
@@ -46,7 +49,7 @@ class _StubGame:
 
 
 class TestKeyMapping:
-    """键位表：方向键四方向全支持；字母区仅 W/S/D（A 归托管，左移依赖 ←）。"""
+    """键位表：方向键四方向全支持；WASD 全向（Q 归托管开关）。"""
 
     def test_keyboard_move_tiles_constant(self) -> None:
         assert main_module.KEYBOARD_MOVE_TILES == 5
@@ -57,12 +60,13 @@ class TestKeyMapping:
         assert main_module.MOVE_KEY_DIRECTIONS[pygame.K_LEFT] == (-1, 0)
         assert main_module.MOVE_KEY_DIRECTIONS[pygame.K_RIGHT] == (1, 0)
 
-    def test_letter_zone_only_wsd(self) -> None:
+    def test_letter_zone_wasd_full(self) -> None:
         assert main_module.MOVE_KEY_DIRECTIONS[pygame.K_w] == (0, -1)
+        assert main_module.MOVE_KEY_DIRECTIONS[pygame.K_a] == (-1, 0)  # A 回归左移（Q 让出托管）
         assert main_module.MOVE_KEY_DIRECTIONS[pygame.K_s] == (0, 1)
         assert main_module.MOVE_KEY_DIRECTIONS[pygame.K_d] == (1, 0)
-        assert pygame.K_a not in main_module.MOVE_KEY_DIRECTIONS  # A 归托管开关
-        assert pygame.K_a == main_module.AUTO_COMMAND_KEY
+        assert pygame.K_q == main_module.AUTO_COMMAND_KEY
+        assert pygame.K_q not in main_module.MOVE_KEY_DIRECTIONS
 
 
 class TestFormationMove:
@@ -127,7 +131,7 @@ class TestFormationMove:
 
 
 class TestToggleAutoCommand:
-    """A 键托管：交互模式切换玩家侧 AiCommander on/off；--demo（demo_mode=True）无效。"""
+    """Q 键托管：交互模式切换玩家侧 AiCommander on/off；--demo（demo_mode=True）无效。"""
 
     def test_toggle_on_attaches_player_commander(self) -> None:
         game = _StubGame()
@@ -192,10 +196,69 @@ class TestHudStatusLine:
     def test_auto_on_and_hints_appended(self) -> None:
         texts = self._hud_texts(auto_command=True, show_hints=True)
         assert any("AUTO: ON" in t for t in texts)
-        assert any("MOVE: ARROWS/W S D" in t and "FIRE: F" in t and "AUTO: A" in t for t in texts)
+        assert any("MOVE: ARROWS/WASD" in t and "FIRE: F" in t and "AUTO: Q" in t for t in texts)
 
     def test_auto_off_and_hints_hidden(self) -> None:
         texts = self._hud_texts(auto_command=False, show_hints=False)
         assert all("AUTO: ON" not in t for t in texts)
         assert all("ARROWS" not in t for t in texts)
         assert any(t.startswith("FIRE: ") for t in texts)  # 既有状态行内容不变
+
+
+class _HeldGame:
+    """_poll_held_move 所需最小游戏状态（鸭子类型，免 pygame 显示）。"""
+
+    def __init__(self, service: BattleService) -> None:
+        self.service = service
+        self.dispatcher = OrderDispatcher()
+
+
+class TestHeldMove:
+    """长按连续移动：按住 + 上一段走完 → 续发下一段；段中不重发；无按键不动。"""
+
+    @staticmethod
+    def _poll_with_keys(monkeypatch: pytest.MonkeyPatch, held: set[int]) -> None:
+        monkeypatch.setattr(
+            pygame.key, "get_pressed", lambda: {key: key in held for key in main_module.MOVE_KEY_DIRECTIONS}
+        )
+
+    def test_held_key_dispatches_segment(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        service = _service_with((6, 10))
+        self._poll_with_keys(monkeypatch, {pygame.K_w})
+        main_module._poll_held_move(_HeldGame(service))  # type: ignore[arg-type]
+        mech = service.get("px-01")
+        assert mech is not None
+        assert mech.move_target == _tile_center((6, 5))
+
+    def test_held_key_mid_segment_does_not_redispatch(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        service = _service_with((6, 10))
+        dispatcher = OrderDispatcher()
+        main_module._dispatch_formation_move(service, dispatcher, 0, -1)
+        dispatched_mid_segment = len(dispatcher.order_log)
+        self._poll_with_keys(monkeypatch, {pygame.K_w})
+        main_module._poll_held_move(_HeldGame(service))  # type: ignore[arg-type]
+        assert len(dispatcher.order_log) == dispatched_mid_segment  # 段中不重发
+
+    def test_held_key_chains_next_segment_after_arrival(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        service = _service_with((6, 10))
+        self._poll_with_keys(monkeypatch, {pygame.K_w})
+        game = _HeldGame(service)  # type: ignore[arg-type]
+        dispatcher = game.dispatcher
+        main_module._poll_held_move(game)
+        first = len(dispatcher.order_log)
+        assert first == 1
+        main_module._poll_held_move(game)
+        assert len(dispatcher.order_log) == first  # 段中不重发
+        mech = service.get("px-01")
+        assert mech is not None
+        mech.move_target = None  # 模拟上一段走完（位置不动，基点仍为当前 tile）
+        main_module._poll_held_move(game)
+        assert len(dispatcher.order_log) > first  # 按住续发下一段
+        assert mech.move_target == _tile_center((6, 5))  # 基点=当前 tile(6,10) 再上×5
+
+    def test_no_key_held_no_dispatch(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        service = _service_with((6, 10))
+        dispatcher = OrderDispatcher()
+        self._poll_with_keys(monkeypatch, set())
+        main_module._poll_held_move(_HeldGame(service))  # type: ignore[arg-type]
+        assert dispatcher.order_log == ()

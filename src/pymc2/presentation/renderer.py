@@ -426,7 +426,7 @@ class Renderer:
         # 键位提示槽位：[HelpText] 底对齐锚点（show_hints 才画；面板模式提示收进面板）。
         if show_hints and layout.help_text_pos is not None:
             help_x, help_bottom = self._panel_pos(*layout.help_text_pos)
-            hint = self._font.render("MOVE: ARROWS/W S D | FIRE: F | AUTO: A", True, _LABEL_COLOR)
+            hint = self._font.render("MOVE: ARROWS/WASD (HOLD=CONT) | FIRE: F | AUTO: Q", True, _LABEL_COLOR)
             self.screen.blit(hint, (help_x, help_bottom - hint.get_height()))
 
     @staticmethod
@@ -544,7 +544,7 @@ class Renderer:
             text += " | AUTO: ON"
         if show_hints:
             # pygame 内置字体无 CJK 字形，提示行用 ASCII 保证可渲染（中文键位说明见 README）。
-            text += " | MOVE: ARROWS/W S D | FIRE: F | AUTO: A"
+            text += " | MOVE: ARROWS/WASD (HOLD=CONT) | FIRE: F | AUTO: Q"
         line = self._font.render(text, True, _LABEL_COLOR)
         self.screen.blit(line, (8, self.screen.get_height() - 20))
 
