@@ -29,6 +29,7 @@ import argparse
 import math
 import os
 import sys
+import time
 from collections.abc import Sequence
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -68,6 +69,8 @@ KEYBOARD_MOVE_TILES = 5  # 单次按键沿方向移动的格数（模块常量�
 MAX_FRAME_DT_S = 0.1
 CLICK_MAX_DRAG_PX = 4.0  # 拖拽位移低于该阈值视为单击（保留 M1 单击选中路径）
 MAX_RETRIES_PER_MISSION = 3  # demo 同任务连续战败上限（防自动演示死循环）
+SETTLEMENT_CONFIRM_TIMEOUT_S = 6.0  # 结算画面停留上限（按键/点击可提前继续）
+SETTLEMENT_CONTINUE_KEYS = frozenset({pygame.K_RETURN, pygame.K_KP_ENTER, pygame.K_SPACE})
 
 
 def _default_script_path() -> Path:
@@ -388,6 +391,56 @@ def _print_settlement(state: CampaignState, result: MissionResult) -> None:
     )
 
 
+def _defeat_is_terminal(state: CampaignState, result: MissionResult) -> bool:
+    """战败终局判定：名册全灭后无法再战——战役失败终局，不再重试空名册关卡。
+
+    旧逻辑缺陷：全灭后重试以 0 台己方机甲开局，is_defeat 要求「至少曾有己方
+    机甲」永不触发，只能靠连续战败 3 次兜底（软锁，用户真机踩中）。
+    """
+    return not result.victory and not state.roster
+
+
+def _settlement_overlay(state: CampaignState, result: MissionResult) -> tuple[str, tuple[str, ...]]:
+    """窗口内结算画面文案（ASCII，对齐 HUD 提示行惯例）。"""
+    title = "MISSION ACCOMPLISHED" if result.victory else "MISSION FAILED"
+    lost = " ".join(result.lost_unit_ids) or "none"
+    lines = (
+        f"{result.mission_id}  RP +{result.rp_reward} reward +{result.rp_salvage} salvage = {state.requisition_points}",
+        f"LOSSES: {lost}",
+        "PRESS ENTER / SPACE / CLICK TO CONTINUE",
+    )
+    return title, lines
+
+
+def _show_settlement(
+    game: Game,
+    title: str,
+    lines: tuple[str, ...],
+    clock: pygame.time.Clock,
+    *,
+    timeout_s: float = SETTLEMENT_CONFIRM_TIMEOUT_S,
+) -> None:
+    """窗口内结算呈现：重绘战场帧 + 遮罩摘要，回车/空格/点击继续，超时自动继续。
+
+    QUIT 事件置 game.running=False 交由调用方收口（与战斗循环同一退出语义）。
+    """
+    deadline = time.monotonic() + timeout_s
+    while game.running and time.monotonic() < deadline:
+        for event in pygame.event.get():
+            if event.type == pygame.QUIT:
+                game.running = False
+                return
+            if event.type == pygame.MOUSEBUTTONDOWN:
+                return
+            if event.type == pygame.KEYDOWN and event.key in SETTLEMENT_CONTINUE_KEYS:
+                return
+        update_camera(game)
+        game.renderer.render(game.service, game.camera.x, game.camera.y)
+        game.renderer.draw_settlement_overlay(title, lines)
+        pygame.display.flip()
+        clock.tick(60)
+
+
 def _run_refit_phase(state: CampaignState, refit: RefitService) -> None:
     """整备阶段：修复全部受损机甲 → RP 充足时购入一台新机甲；打印整备摘要。"""
     print("== 整备 ==")
@@ -448,8 +501,14 @@ def main(argv: Sequence[str] = ()) -> int:
                 print(f"   [战报] {message}")
             result = chain.complete_mission(state, battle)
             _print_settlement(state, result)
+            _show_settlement(game, *_settlement_overlay(state, result), clock)
+            if not game.running:
+                return 0
             if result.victory:
                 _run_refit_phase(state, refit)
+            elif _defeat_is_terminal(state, result):
+                print("== 战役失败：名册全灭，战役终局 ==")
+                return 0
             else:
                 retries += 1
                 failed_mission_id = result.mission_id
@@ -457,6 +516,12 @@ def main(argv: Sequence[str] = ()) -> int:
                     print("== 战役失败：同任务连续战败 3 次，演示结束 ==")
                     return 0
         print(f"== 战役 {state.campaign_id} 完成：全 {len(chain.missions)} 任务结算 ==")
+        _show_settlement(
+            game,
+            "CAMPAIGN COMPLETE",
+            (f"ALL {len(chain.missions)} MISSIONS SETTLED", "PRESS ENTER / SPACE / CLICK TO EXIT"),
+            clock,
+        )
         return 0
     finally:
         pygame.quit()

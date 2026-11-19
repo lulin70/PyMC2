@@ -105,3 +105,16 @@
   test_interactive_slice 组移动循环 80→200（双机同目标 tile，后到者经超时阀通过）。
   门禁：全量 352 passed / 0 failed + ruff check/format + mypy（27 文件）全绿。
 
+## 交付后注记（2026-11-19）：窗口内结算呈现 + 名册全灭终局（用户反馈：战斗结束后不会结束和结算）
+
+- **名册全灭终局**（软锁修复）：旧逻辑全灭战败后重试当前关，以 0 台己方机甲开局——
+  `is_defeat` 要求「至少曾有己方机甲」永不触发，只能靠连续战败 3 次兜底。新增
+  `_defeat_is_terminal`：战败且名册空 → 直接「战役失败：名册全灭，战役终局」，不再重试。
+- **窗口内结算画面**：旧结算只打终端文本，窗口无任何提示（用户视觉上「打完继续打」）。
+  新增 Renderer.draw_settlement_overlay（半透明黑遮罩 + 居中标题/摘要，字体缺失静默
+  降级为纯遮罩）+ main._show_settlement（重绘战场帧 + 遮罩，回车/空格/点击继续，
+  SETTLEMENT_CONFIRM_TIMEOUT_S=6 超时自动继续，QUIT 与战斗循环同一退出语义）。
+  单任务结算（MISSION ACCOMPLISHED/FAILED + RP 构成 + 损失）与战役完成
+  （CAMPAIGN COMPLETE）均走画面。文案 ASCII 对齐 HUD 提示行惯例。
+  验收：unit 9 例（终局判定 3/文案 2/遮罩像素 1/等待循环事件驱动 3）；
+  门禁全量 412 passed + ruff check/format + mypy（27 文件）全绿。

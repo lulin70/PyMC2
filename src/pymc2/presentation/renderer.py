@@ -14,6 +14,7 @@ from __future__ import annotations
 
 import hashlib
 import random
+from collections.abc import Sequence
 
 import pygame
 
@@ -171,6 +172,25 @@ class Renderer:
             self._font = pygame.font.Font(None, 16)
         except Exception:  # noqa: BLE001 - 无字体环境下降级为无标签
             self._font = None
+
+    def draw_settlement_overlay(self, title: str, lines: Sequence[str]) -> None:
+        """任务结算遮罩层：半透明黑底 + 居中标题/摘要行（窗口内结算呈现）。
+
+        字体环境缺失时静默降级为纯遮罩（无文字），不阻塞结算流程。
+        """
+        veil = pygame.Surface(self.screen.get_size(), pygame.SRCALPHA)
+        veil.fill((0, 0, 0, 180))
+        self.screen.blit(veil, (0, 0))
+        if self._font is None:
+            return
+        width, height = self.screen.get_size()
+        title_surf = self._font.render(title, True, (255, 210, 90))
+        self.screen.blit(title_surf, title_surf.get_rect(midtop=(width // 2, height // 3)))
+        y = height // 3 + title_surf.get_height() + 12
+        for line in lines:
+            line_surf = self._font.render(line, True, (230, 230, 230))
+            self.screen.blit(line_surf, line_surf.get_rect(midtop=(width // 2, y)))
+            y += line_surf.get_height() + 6
 
     def _build_terrain(self) -> pygame.Surface:
         """pack 含地面/覆盖资产 → MC2 纹理地形；否则程序化色块（逐字节不变）。"""
