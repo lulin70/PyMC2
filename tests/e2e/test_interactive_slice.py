@@ -141,7 +141,9 @@ def test_interactive_select_move_and_auto_engagement(game: main_module.Game) -> 
     assert player_b.move_target == (400.0, 336.0)
     assert_commander_boundary(game)
     saved.append(save_screenshot(game.screen, "03_move_order.png"))
-    for _ in range(80):
+    # 让路协商（MC2-05）：双机同目标 tile，后到者经超时阀（>90 帧）强制通行后到位
+    # → 循环上限 80→200
+    for _ in range(200):
         main_module.run_frame(game, 0.05)
         if player_a.move_target is None and player_b.move_target is None:
             break

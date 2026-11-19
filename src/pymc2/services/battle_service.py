@@ -4,6 +4,13 @@ M7 自动交战（用户反馈：开火自动化）：注入 dispatcher 后，ti
 FireMode.FREE 的机甲自动锁定射程内最近敌机甲，构造 TacticalOrder（origin=SELF）
 经 OrderDispatcher 下发，与玩家/指挥官指令同源同路径；显式指定目标（attack_target_id
 仍有效）优先，HOLD 火力纪律不自动锁定。未注入 dispatcher 时行为与存量完全一致。
+
+让路协商（MC2-05 直线插值版，修复敌我机甲重叠穿人）：每帧构建占位快照（静态占位
+tile + 移动机甲运动快照），移动机甲在本帧将进入新 tile 且该 tile 被静态存活机甲
+占据、或与另一移动机甲互换对冲时，本帧停走（yield，武器/散热照常推进）。
+连续让路超过 YIELD_TIMEOUT_TICKS 强制通行（防死锁逃生阀）；两个移动机甲非互换
+不互阻（穿越语义，与 PyCC2 MC2-05 一致）。yield 状态存 service 内部 dict
+（按 mech.id 的连续被阻帧数），实体零新字段。
 """
 
 from __future__ import annotations
@@ -11,9 +18,9 @@ from __future__ import annotations
 import math
 import random
 from collections.abc import Callable
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, NamedTuple
 
-from pymc2.domain.entities.mech import TILE_SIZE_PX, Faction, FireMode, Mech, Weapon
+from pymc2.domain.entities.mech import MOVE_SPEED_PX_S, TILE_SIZE_PX, Faction, FireMode, Mech, Weapon
 from pymc2.domain.entities.mech_chassis import MechLocation, make_medium_chassis
 from pymc2.domain.entities.pilot import Pilot
 from pymc2.domain.orders.tactical_order import OrderOrigin, OrderType, TacticalOrder
@@ -28,6 +35,30 @@ if TYPE_CHECKING:
     from pymc2.services.order_dispatcher import OrderDispatcher
 
 SELECT_HALF_PX = 16.0
+
+# 让路超时逃生阀：连续让路帧数超过该值强制通行（PyCC2 MC2-05 同款 90 帧，防死锁）。
+YIELD_TIMEOUT_TICKS = 90
+
+
+def _tile_of(x: float, y: float) -> tuple[int, int]:
+    """像素坐标 → tile 坐标（与 Mech.tile 同口径）。"""
+    return (int(x) // TILE_SIZE_PX, int(y) // TILE_SIZE_PX)
+
+
+class _MoverFrame(NamedTuple):
+    """单个移动机甲的本帧运动快照（tile 坐标）。"""
+
+    current_tile: tuple[int, int]
+    next_tile: tuple[int, int]  # 本帧推进后将进入的 tile
+    target_tile: tuple[int, int]  # 移动目标像素点所在 tile
+
+
+class _OccupancySnapshot(NamedTuple):
+    """每帧占位快照：静态占位 tile 与移动机甲运动快照（让路协商输入）。"""
+
+    static_tiles: dict[tuple[int, int], str]
+    movers: dict[str, _MoverFrame]
+
 
 # M1 初始战局：双机甲沿道路（tile row 10）对峙，间距 384px，双方武器均可及。
 PLAYER_SPAWN_TILE = (6, 10)
@@ -60,6 +91,8 @@ class BattleService:
         # M7 自动交战：注入 dispatcher 后 FREE 机甲自动锁定射程内最近敌机甲
         # （None = 关闭，存量测试/直构战局零影响）。
         self.dispatcher: OrderDispatcher | None = None
+        # 让路协商（MC2-05）：mech.id → 连续被阻帧数；清零时机见 _advance_with_yield。
+        self._yield_ticks: dict[str, int] = {}
 
     def add_mech(self, mech: Mech) -> None:
         self.mechs[mech.id] = mech
@@ -203,9 +236,10 @@ class BattleService:
         return best
 
     def tick(self, dt: float) -> None:
-        """推进一帧：单位移动与冷却、自动交战锁定、弹道飞行、到达结算伤害、脚本触发器评估。"""
+        """推进一帧：单位移动（含让路协商）、自动交战锁定、弹道飞行、到达结算伤害、脚本触发器评估。"""
+        snapshot = self._occupancy_snapshot(dt)
         for mech in self.mechs.values():
-            mech.tick(dt)
+            self._advance_with_yield(mech, dt, snapshot)
         self._auto_engage()
         still_flying: list[Projectile] = []
         for projectile in self.projectiles:
@@ -216,6 +250,92 @@ class BattleService:
         self.projectiles = still_flying
         if self.tick_hook is not None:
             self.tick_hook(self)
+
+    def _advance_with_yield(self, mech: Mech, dt: float, snapshot: _OccupancySnapshot) -> None:
+        """单机推进（含让路）：被阻挡时本帧冻结移动（位置与目标保持，武器/散热照常）。
+
+        让路计数（连续被阻帧数）生命周期：被阻 +1；进入新 tile / 到达目标 /
+        停止指令或无移动意图 / 阵亡 → 清零（超时阀强制通行期间不清，直至进入新 tile）。
+        """
+        if not mech.alive or mech.move_target is None:
+            self._yield_ticks.pop(mech.id, None)
+            mech.tick(dt)
+            return
+        if self._movement_blocked(mech, snapshot):
+            self._yield_ticks[mech.id] = self._yield_ticks.get(mech.id, 0) + 1
+            target = mech.move_target
+            mech.move_target = None  # 本帧仅推进武器冷却/散热，移动冻结（朝向语义：位置与目标均不变）
+            mech.tick(dt)
+            mech.move_target = target
+            return
+        pre_tile = mech.tile
+        mech.tick(dt)
+        # 成功推进：进入新 tile 或到达目标 → 连续让路计数清零（tile 内移动保持计数，
+        # 与 PyCC2「插值帧不触碰 yield_ticks」一致，保证超时阀跨 tile 边界仍生效）。
+        if mech.move_target is None or mech.tile != pre_tile:
+            self._yield_ticks.pop(mech.id, None)
+
+    def _occupancy_snapshot(self, dt: float) -> _OccupancySnapshot:
+        """每帧占位快照（O(n) 重建，无全局占位表）。
+
+        - static_tiles：无移动意图的存活机甲所在 tile（硬阻挡源，阵亡不入表）；
+        - movers：有移动意图机甲的当前 tile / 本帧将进入 tile / 目标 tile（互换对冲判定用）。
+        快照先于本帧任何移动构建（同 PyCC2）：同帧后行机甲以前行机甲的帧前位置判定。
+        """
+        static_tiles: dict[tuple[int, int], str] = {}
+        movers: dict[str, _MoverFrame] = {}
+        for mech in self.mechs.values():
+            if not mech.alive:
+                continue
+            target = mech.move_target
+            if target is None:
+                static_tiles[mech.tile] = mech.id
+                continue
+            movers[mech.id] = _MoverFrame(
+                current_tile=mech.tile,
+                next_tile=self._frame_next_tile(mech, target, dt),
+                target_tile=_tile_of(*target),
+            )
+        return _OccupancySnapshot(static_tiles=static_tiles, movers=movers)
+
+    @staticmethod
+    def _frame_next_tile(mech: Mech, target: tuple[float, float], dt: float) -> tuple[int, int]:
+        """预测本帧推进后所在 tile（不落位）。
+
+        与 Mech._advance_move 同式（MOVE_SPEED_PX_S × 机动惩罚 × dt，dist ≤ step 吸附
+        目标）——改动移动物理必须同步此处，否则让路判定相位漂移。
+        """
+        tx, ty = target
+        dx = tx - mech.x
+        dy = ty - mech.y
+        dist = math.hypot(dx, dy)
+        step = MOVE_SPEED_PX_S * (1.0 - mech.chassis.mobility_penalty) * dt
+        if dist <= step:
+            return _tile_of(tx, ty)
+        return _tile_of(mech.x + dx / dist * step, mech.y + dy / dist * step)
+
+    def _movement_blocked(self, mech: Mech, snapshot: _OccupancySnapshot) -> bool:
+        """让路判定（直线插值版）：仅在本帧将进入新 tile 的瞬间产生硬阻挡。
+
+        - 超时逃生阀：连续让路 > YIELD_TIMEOUT_TICKS → 强制通行（防死锁，对应 MC2
+          "yielded for a while"）；
+        - 本帧将进入的 tile 被静态存活机甲占据 → yield；
+        - 互换对冲：互以对方当前 tile 为目标 tile → 双方 yield；
+        - 两个移动机甲非互换 → 不互阻（穿越语义，与 PyCC2 MC2-05 一致）。
+        """
+        if self._yield_ticks.get(mech.id, 0) > YIELD_TIMEOUT_TICKS:
+            return False
+        frame = snapshot.movers[mech.id]
+        if frame.next_tile != frame.current_tile:
+            occupant = snapshot.static_tiles.get(frame.next_tile)
+            if occupant is not None and occupant != mech.id:
+                return True
+        for other_id, other in snapshot.movers.items():
+            if other_id == mech.id:
+                continue
+            if frame.target_tile == other.current_tile and other.target_tile == frame.current_tile:
+                return True
+        return False
 
     def _auto_engage(self) -> None:
         """自动交战（M7）：FREE 机甲对射程内最近敌机甲自动锁定并开火。

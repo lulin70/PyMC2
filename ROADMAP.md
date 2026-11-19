@@ -84,3 +84,24 @@
   失败维持降级提示、无候选静默。缓存目录若为 git 仓库（含 .git）无碍——load 仅扫
   Data/TGL、Data/Art 三个子目录。验收：default_pack_root 三级探测 + main 接线
   （显式优先/自动发现/降级/静默）共 9 例，HOME/env 全程 monkeypatch，不读真实资产仓库。
+
+## 交付后注记（2026-11-19）：单位占位与让路协商（用户反馈：敌我机甲画面重叠互穿）
+
+- **让路协商**（用户反馈：两台机甲可站同一格互相穿过；参照 PyCC2 Wave 3 MC2-05，直线插值版）：
+  BattleService.tick 每帧先构建占位快照（`_occupancy_snapshot`：static_tiles=无移动意图
+  存活机甲 tile；movers=移动机甲的当前/本帧将进入/目标 tile，O(n) 重建无全局占位表），
+  逐机经 `_advance_with_yield` 推进：本帧将进入新 tile 且被静态存活机甲占据、或与另一
+  移动机甲互换对冲（互以对方当前 tile 为目标 tile）→ 本帧停走（yield：位置与目标保持、
+  武器冷却/散热照常，连续被阻帧数 +1）；tile 内移动不阻挡（只在 tile 进入瞬间硬阻挡，
+  防「已在遮挡 tile 内卡死」）；两个移动机甲非互换不互阻（穿越语义）。连续让路超过
+  `YIELD_TIMEOUT_TICKS=90` 强制通行（防死锁逃生阀，通行至进入新 tile 才清计数）。
+  yield 状态存 service 内部 `_yield_ticks` dict（mech.id → 连续被阻帧数），实体零新字段；
+  计数清零时机：被阻帧以外进入新 tile / 到达目标 / 停止指令或无意图 / 阵亡。
+  渲染层 tie-break：机甲按 y 升序绘制（y 大者后画），消除同格叠压随机感。
+  验收：unit 15 例（快照分流/静态阻挡冻结+计数/仅 tile 进入瞬间/互换双方 yield/
+  非互换不阻/对穿到达/超时边界 90 仍阻+>90 通行/计数清零四时机/阵亡不阻/y 排序）
+  + integration 3 例（对冲互换 ~100 帧双双到达不死锁/静态挡路边界外等待→超时穿过到达/
+  自动交战与让路共存——让路期间持续开火掉血）；存量适配 2 处：test_m2_slice 与
+  test_interactive_slice 组移动循环 80→200（双机同目标 tile，后到者经超时阀通过）。
+  门禁：全量 352 passed / 0 failed + ruff check/format + mypy（27 文件）全绿。
+

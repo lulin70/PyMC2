@@ -109,7 +109,7 @@ class Renderer:
         *,
         drag_rect: tuple[float, float, float, float] | None = None,
     ) -> None:
-        """绘制一帧：地形 → 移动标记 → 弹丸 → 机甲（血条/选中框）→ 攻击高亮 → 框选矩形 → HUD。"""
+        """绘制一帧：地形 → 移动标记 → 弹丸 → 机甲（按 y 排序，血条/选中框）→ 攻击高亮 → 框选矩形 → HUD。"""
         self.screen.fill(_GRASS_BASE)
         self.screen.blit(self._terrain, (-int(cam_x), -int(cam_y)))
         for uid in service.selected_ids:
@@ -118,7 +118,8 @@ class Renderer:
                 self._draw_move_marker(mech.move_target, cam_x, cam_y)
         for projectile in service.projectiles:
             self._draw_projectile(projectile, cam_x, cam_y)
-        for mech in service.mechs.values():
+        # y 排序 tie-break：y 大者后画（后绘覆盖先绘），同格/重叠时消除叠压随机感。
+        for mech in sorted(service.mechs.values(), key=lambda m: m.y):
             self._draw_mech(mech, cam_x, cam_y, selected=mech.id in service.selected_ids)
         for uid in service.selected_ids:
             mech = service.get(uid)

@@ -101,7 +101,9 @@ def test_m2_full_chain_box_select_group_move_fire_mode_and_attack(game: main_mod
     assert player_a.move_target == (400.0, 336.0)
     assert player_b.move_target == (400.0, 336.0)
     saved.append(save_screenshot(game.screen, "02_group_move.png"))
-    for _ in range(80):
+    # 让路协商（MC2-05）：双机同目标 tile，先到者就位后后到者在边界外让路，
+    # 需 >YIELD_TIMEOUT_TICKS(90) 帧超时阀强制通行后才能到位 → 循环上限 80→200
+    for _ in range(200):
         main_module.run_frame(game, 0.05)
         if player_a.move_target is None and player_b.move_target is None:
             break
