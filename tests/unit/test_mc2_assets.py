@@ -5,6 +5,10 @@
 （px-01→madcat / px-02→thor / ex→urbanmech / px 前缀回退）、缩放缓存、
 default_pack_root 三级探测（env → 缓存目录 → None，HOME/env 全程 monkeypatch，
 不读本机真实资产仓库）。
+Wave V1 地形合成：ground/overlay/environment 三类索引、resolve_ground 确定性选张
+（seed 取模、道路序列按帧号排序、Cement 城镇地形不暴露）、地面纹理 alpha 强制
+不透明（MC2 管线 alpha=高光通道）、overlay 原生 alpha 蒙版保留、resolve_environment
+别名 + _x/_dam 摧毁变体派生、ground-only pack 可加载。
 """
 
 from __future__ import annotations
@@ -23,6 +27,14 @@ MADCAT_COLOR = (200, 40, 40, 255)
 THOR_COLOR = (40, 200, 80, 255)
 URBANMECH_COLOR = (60, 90, 220, 255)
 AWESOME_COLOR = (200, 160, 40, 255)
+# Wave V1 fixture 色板
+DETAIL_COLORS = [(150, 100, 60, 255), (90, 120, 70, 255), (40, 80, 120, 255)]
+ROAD_FRAME_COLORS = [(140 + i, 120, 90, 255) for i in range(6)]  # 每帧异色验证帧号排序
+TREE_COLOR = (30, 110, 40, 255)
+TREE_X_COLOR = (70, 60, 50, 255)
+HOUSE_DAM_COLOR = (110, 105, 95, 255)
+JUNGLE_X_COLOR = (55, 65, 30, 255)
+WRECK_COLOR = (120, 120, 120, 255)
 
 
 @pytest.fixture()
@@ -38,6 +50,16 @@ def write_tga(path: Path, color: tuple[int, int, int, int]) -> None:
     Image.new("RGBA", SIZE_PX, color).save(path)
 
 
+def write_tga_masked(path: Path, opaque_color: tuple[int, int, int, int], opaque_width: int) -> None:
+    """现场生成带形状蒙版的 overlay TGA：左侧 opaque_width 列不透明、右侧全透明。"""
+    path.parent.mkdir(parents=True, exist_ok=True)
+    image = Image.new("RGBA", SIZE_PX, (0, 0, 0, 0))
+    for x in range(min(opaque_width, SIZE_PX[0])):
+        for y in range(SIZE_PX[1]):
+            image.putpixel((x, y), opaque_color)
+    image.save(path)
+
+
 @pytest.fixture()
 def pack_root(tmp_path: Path) -> Path:
     """mini pack：覆盖 256/128/Art 三目录 + 大写扩展名 + 包含匹配命名。"""
@@ -46,6 +68,28 @@ def pack_root(tmp_path: Path) -> Path:
     write_tga(root / "Data" / "TGL" / "128" / "THOR.TGA", THOR_COLOR)
     write_tga(root / "Data" / "Art" / "MCL_MC_UrbanMech_A.tga", URBANMECH_COLOR)
     write_tga(root / "Data" / "TGL" / "256" / "AWESOME1.tga", AWESOME_COLOR)
+    return root
+
+
+@pytest.fixture()
+def terrain_root(tmp_path: Path) -> Path:
+    """地形 mini pack：3 张 Detail + Cement（城镇不暴露）+ Water、乱序写入的
+    2lanedirt0000-0005 道路序列、树/房/摧毁变体环境精灵。"""
+    root = tmp_path / "mc2-terrain"
+    ground = root / "Data" / "Textures" / "64"
+    for i, color in enumerate(DETAIL_COLORS):
+        write_tga(ground / f"Detail_{(i + 1) * 10000}.tga", color)
+    write_tga(ground / "Cement_1.tga", (120, 120, 120, 255))
+    write_tga(ground / "Water_ocean.tga", (30, 60, 90, 255))
+    overlays = root / "Data" / "Textures" / "64Overlays"
+    for i in (5, 2, 0, 4, 1, 3):  # 乱序写入：验证按帧号排序
+        write_tga(overlays / f"2lanedirt{i:04d}.TGA", ROAD_FRAME_COLORS[i])
+    tgl = root / "Data" / "TGL" / "128"
+    write_tga(tgl / "A_Pine&Palm.tga", TREE_COLOR)
+    write_tga(tgl / "A_Pine&PalmX.tga", TREE_X_COLOR)
+    write_tga(tgl / "A_GreenHouseDam.tga", HOUSE_DAM_COLOR)
+    write_tga(tgl / "A_JungletreeAX.tga", JUNGLE_X_COLOR)
+    write_tga(tgl / "A_MechDam.tga", WRECK_COLOR)
     return root
 
 
@@ -173,3 +217,168 @@ class TestDefaultPackRoot:
         monkeypatch.delenv(ASSETS_ENV_VAR, raising=False)
         monkeypatch.setenv("HOME", str(tmp_path / "empty-home"))
         assert default_pack_root() is None
+
+
+def ground_color(pack: MC2AssetPack, kind: str, seed: int) -> tuple[int, int, int, int]:
+    surface = pack.resolve_ground(kind, seed)
+    assert surface is not None
+    return surface.get_at((16, 16))
+
+
+class TestGroundResolve:
+    """resolve_ground：确定性选张 + 道路序列帧号排序 + 城镇地形不暴露。"""
+
+    def test_load_counts_ground_overlay_and_sprites(self, terrain_root: Path) -> None:
+        pack = MC2AssetPack.load(terrain_root)
+        assert pack is not None
+        assert pack.has_ground_assets
+        # 5 ground + 6 overlay + 5 env = 16
+        assert pack.tga_count == 16
+
+    def test_grass_pool_only_detail_series(self, terrain_root: Path) -> None:
+        """grass 池只收 Detail 系列：Cement（城镇地形）与 undefined 不入池。"""
+        pack = MC2AssetPack.load(terrain_root)
+        assert pack is not None
+        assert len(pack.ground_pool("grass")) == 3
+
+    def test_resolve_ground_deterministic_and_cycling(self, terrain_root: Path) -> None:
+        """同 seed 同结果（同一 Surface 对象）；seed 取模循环选张。"""
+        pack = MC2AssetPack.load(terrain_root)
+        assert pack is not None
+        assert pack.resolve_ground("grass", 7) is pack.resolve_ground("grass", 7)
+        for seed in range(6):
+            assert ground_color(pack, "grass", seed) == DETAIL_COLORS[seed % 3]
+
+    def test_road_sequence_sorted_by_frame_number(self, terrain_root: Path) -> None:
+        """road 池按帧号排序（fixture 乱序写入）：seed k 命中第 k 帧。"""
+        pack = MC2AssetPack.load(terrain_root)
+        assert pack is not None
+        assert len(pack.ground_pool("road")) == 6
+        for seed in range(6):
+            assert ground_color(pack, "road", seed) == ROAD_FRAME_COLORS[seed]
+
+    def test_water_single_tile(self, terrain_root: Path) -> None:
+        pack = MC2AssetPack.load(terrain_root)
+        assert pack is not None
+        assert ground_color(pack, "water", 0) == (30, 60, 90, 255)
+
+    def test_unknown_or_town_kind_returns_none(self, terrain_root: Path) -> None:
+        """未登记 kind 与 Cement 城镇地形（V2+）均回退 None。"""
+        pack = MC2AssetPack.load(terrain_root)
+        assert pack is not None
+        assert pack.resolve_ground("cement") is None
+        assert pack.resolve_ground("lava") is None
+
+    def test_ground_tiles_forced_opaque(self, tmp_path: Path) -> None:
+        """地面纹理 alpha 是高光通道：fixture 写 alpha=48，加载后强制 255。"""
+        root = tmp_path / "glossy"
+        path = root / "Data" / "Textures" / "64" / "Detail_10000.tga"
+        path.parent.mkdir(parents=True)
+        Image.new("RGBA", SIZE_PX, (150, 100, 60, 48)).save(path)
+        pack = MC2AssetPack.load(root)
+        assert pack is not None
+        surface = pack.resolve_ground("grass", 0)
+        assert surface is not None
+        assert surface.get_at((0, 0)) == (150, 100, 60, 255)
+
+    def test_overlays_keep_native_alpha_mask(self, tmp_path: Path) -> None:
+        """道路 overlay alpha 是形状蒙版：不透明区保持 alpha、透明区保持 0。"""
+        root = tmp_path / "masked"
+        write_tga_masked(root / "Data" / "Textures" / "64Overlays" / "2lanedirt0000.TGA", (140, 120, 90, 200), 16)
+        pack = MC2AssetPack.load(root)
+        assert pack is not None
+        surface = pack.resolve_ground("road", 0)
+        assert surface is not None
+        assert surface.get_at((4, 16)) == (140, 120, 90, 200)  # 路体：原生 alpha 保留
+        assert surface.get_at((24, 16))[3] == 0  # 路体外：蒙版透明
+
+    def test_ground_only_pack_loads_and_degrades_mech(self, tmp_path: Path) -> None:
+        """只有地面资产的 pack 也算有效加载：机甲解析回退 None，地面可用。"""
+        root = tmp_path / "ground-only"
+        write_tga(root / "Data" / "Textures" / "64" / "Detail_10000.tga", DETAIL_COLORS[0])
+        pack = MC2AssetPack.load(root)
+        assert pack is not None
+        assert pack.resolve_mech_sprite("px-01") is None
+        assert pack.resolve_ground("grass", 0) is not None
+
+    def test_empty_ground_index_returns_none(self, pack_root: Path) -> None:
+        """无地面资产的 pack：ground 解析 None（渲染层保持程序化色块）。"""
+        pack = MC2AssetPack.load(pack_root)
+        assert pack is not None
+        assert not pack.has_ground_assets
+        assert pack.resolve_ground("grass") is None
+
+
+class TestScaledGroundTile:
+    def test_scaled_and_cached(self, terrain_root: Path) -> None:
+        pack = MC2AssetPack.load(terrain_root)
+        assert pack is not None
+        first = pack.scaled_ground_tile("grass", 0, 16)
+        assert first is not None
+        assert first.get_size() == (16, 16)
+        assert pack.scaled_ground_tile("grass", 0, 16) is first
+
+    def test_seed_normalized_before_cache(self, terrain_root: Path) -> None:
+        """seed 取模归一化后进缓存：seed 3 与 seed 0 命中同一张（池长 3）。"""
+        pack = MC2AssetPack.load(terrain_root)
+        assert pack is not None
+        assert pack.scaled_ground_tile("grass", 3, 16) is pack.scaled_ground_tile("grass", 0, 16)
+
+    def test_miss_returns_none(self, pack_root: Path) -> None:
+        pack = MC2AssetPack.load(pack_root)
+        assert pack is not None
+        assert pack.scaled_ground_tile("grass", 0, 16) is None
+
+
+class TestResolveEnvironment:
+    """resolve_environment：别名直译 + _x/_dam 变体派生 + 包含匹配。"""
+
+    def test_tree_alias_hits_pine_palm(self, terrain_root: Path) -> None:
+        pack = MC2AssetPack.load(terrain_root)
+        assert pack is not None
+        sprite = pack.resolve_environment("tree")
+        assert sprite is not None
+        assert sprite.get_at((16, 16)) == TREE_COLOR
+
+    def test_x_suffix_hits_destroyed_variant(self, terrain_root: Path) -> None:
+        """tree_x → a_pine&palmx；jungle_tree_x 在基名缺失时仍命中 X 变体。"""
+        pack = MC2AssetPack.load(terrain_root)
+        assert pack is not None
+        tree_x = pack.resolve_environment("tree_x")
+        assert tree_x is not None
+        assert tree_x.get_at((16, 16)) == TREE_X_COLOR
+        jungle_x = pack.resolve_environment("jungle_tree_x")
+        assert jungle_x is not None
+        assert jungle_x.get_at((16, 16)) == JUNGLE_X_COLOR
+
+    def test_greenhouse_maps_to_damaged_variant(self, terrain_root: Path) -> None:
+        """A_GreenHouse 官方缺卡片：greenhouse 与 greenhouse_dam 都指向受损变体。"""
+        pack = MC2AssetPack.load(terrain_root)
+        assert pack is not None
+        for kind in ("greenhouse", "greenhouse_dam"):
+            sprite = pack.resolve_environment(kind)
+            assert sprite is not None
+            assert sprite.get_at((16, 16)) == HOUSE_DAM_COLOR
+
+    def test_mech_wreck_alias(self, terrain_root: Path) -> None:
+        pack = MC2AssetPack.load(terrain_root)
+        assert pack is not None
+        sprite = pack.resolve_environment("mech_wreck")
+        assert sprite is not None
+        assert sprite.get_at((16, 16)) == WRECK_COLOR
+
+    def test_case_insensitive_and_unknown(self, terrain_root: Path) -> None:
+        pack = MC2AssetPack.load(terrain_root)
+        assert pack is not None
+        assert pack.resolve_environment("TREE") is not None
+        assert pack.resolve_environment("zzz") is None
+        assert pack.resolve_environment("  ") is None
+
+    def test_scaled_environment_sprite_cached(self, terrain_root: Path) -> None:
+        pack = MC2AssetPack.load(terrain_root)
+        assert pack is not None
+        first = pack.scaled_environment_sprite("tree", 16)
+        assert first is not None
+        assert first.get_size() == (16, 16)
+        assert pack.scaled_environment_sprite("tree", 16) is first
+        assert pack.scaled_environment_sprite("zzz", 16) is None

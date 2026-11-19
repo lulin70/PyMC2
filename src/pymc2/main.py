@@ -43,7 +43,7 @@ from pymc2.domain.scripting.mission_script import (
     load_mission_script,
 )
 from pymc2.infrastructure.mc2_assets import MC2AssetPack, default_pack_root
-from pymc2.presentation.renderer import WINDOW_HEIGHT_PX, WINDOW_WIDTH_PX, Renderer
+from pymc2.presentation.renderer import WINDOW_HEIGHT_PX, WINDOW_WIDTH_PX, Renderer, plan_decorations
 from pymc2.services.ai_commander import AiCommander
 from pymc2.services.battle_service import BattleService, create_m2_battle
 from pymc2.services.campaign_state import CampaignState, start_campaign
@@ -151,6 +151,11 @@ def create_game(
         demo_mode=demo_mode,
     )
     game.service.dispatcher = game.dispatcher
+    if asset_pack is not None:
+        # 环境点缀（Wave V1）：非道路空 tile 确定性撒点（避开出生格）；纯装饰——
+        # 不阻挡移动不参与命中，对齐让路协商语义。无资产包时保持原状零改动。
+        occupied = {mech.tile for mech in game.service.mechs.values()}
+        game.renderer.set_decorations(plan_decorations(occupied))
     return game
 
 
