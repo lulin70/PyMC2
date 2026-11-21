@@ -2,7 +2,9 @@
 
 - load_mission_script(path)：JSON 文件加载，语法/结构/白名单错误统一包装为
   MissionScriptError（信息含来源与原因，存档损坏不静默）。
-- mission_script_from_dict：dict 级加载（测试与内嵌脚本复用）。
+- mission_script_from_dict：dict 级加载（测试与内嵌脚本复用）；顶层可选 "elevation"
+  键（P1-A）：显式 40×40 行数组或 "hills" 关键字 → ElevationGrid 覆盖，缺失/非法 →
+  None（不覆盖，等效全零默认；容错不抛错，见 docs/P1A_DESIGN_20261121.md §4）。
 - ScriptEngine：照 PyCC2 TriggerSystem 精神（registration order + once/cooldown 门控），
   经 battle.tick_hook 由 battle_service.tick 驱动逐帧评估；返回本帧触发的 trigger_id。
 - ScriptContext：一次脚本会话的观察结果（消息/RP/增援/结局），胜负以
@@ -16,6 +18,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
+from pymc2.domain.elevation import ElevationGrid, generate_hills
 from pymc2.domain.scripting.trigger import (
     ACTION_KINDS,
     CONDITION_KINDS,
@@ -51,10 +54,14 @@ class ScriptContext:
 
 @dataclass(frozen=True)
 class MissionScript:
-    """任务脚本：触发器表（登记序 = 执行序）；胜负由 victory/defeat 动作表达。"""
+    """任务脚本：触发器表（登记序 = 执行序）；胜负由 victory/defeat 动作表达。
+
+    elevation（P1-A 可选）：任务脚本高程覆盖；None = 无覆盖（战局保持地形默认）。
+    """
 
     script_id: str
     triggers: tuple[Trigger, ...]
+    elevation: ElevationGrid | None = None
 
     @property
     def victory_triggers(self) -> tuple[Trigger, ...]:
@@ -87,7 +94,10 @@ def load_mission_script(path: Path) -> MissionScript:
 
 
 def mission_script_from_dict(data: Any) -> MissionScript:
-    """dict → MissionScript：结构校验（缺字段/未知 kind/缺必需参数均显式报错）。"""
+    """dict → MissionScript：结构校验（缺字段/未知 kind/缺必需参数均显式报错）。
+
+    elevation 为可选键且独立容错（非法 → None 不覆盖），不参与严格校验。
+    """
     if not isinstance(data, dict):
         raise TypeError("top level must be a JSON object")
     script_id = data["script_id"]
@@ -95,7 +105,23 @@ def mission_script_from_dict(data: Any) -> MissionScript:
     if not isinstance(triggers_raw, list):
         raise TypeError("'triggers' must be a JSON array")
     triggers = tuple(_parse_trigger(entry, index) for index, entry in enumerate(triggers_raw))
-    return MissionScript(script_id=str(script_id), triggers=triggers)
+    return MissionScript(script_id=str(script_id), triggers=triggers, elevation=_parse_elevation(data.get("elevation")))
+
+
+def _parse_elevation(data: Any) -> ElevationGrid | None:
+    """P1-A 可选 elevation 键解析（容错）：显式 40×40 行数组或 "hills" 关键字 → 网格；
+    缺失/None/非法（类型错误、形状错误、未知关键字）→ None（不覆盖，等效全零默认，
+    且保证 CLI --terrain hills 不被容错路径清零）。"""
+    if data is None:
+        return None
+    try:
+        if isinstance(data, str):
+            return generate_hills() if data == "hills" else None
+        if isinstance(data, list):
+            return ElevationGrid(data)
+    except (TypeError, ValueError):
+        return None
+    return None
 
 
 def _parse_trigger(entry: Any, index: int) -> Trigger:

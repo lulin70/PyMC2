@@ -37,6 +37,7 @@ from pathlib import Path
 
 import pygame
 
+from pymc2.domain.elevation import ElevationGrid, generate_hills
 from pymc2.domain.entities.mech import MAP_SIZE_PX, MAP_TILES, TILE_SIZE_PX, Faction, FireMode
 from pymc2.domain.orders.tactical_order import OrderOrigin, OrderType, TacticalOrder
 from pymc2.domain.scripting.mission_script import (
@@ -107,6 +108,13 @@ def parse_args(argv: Sequence[str] = ()) -> argparse.Namespace:
             "仅限本机学习加载、不打包不再分发"
         ),
     )
+    parser.add_argument(
+        "--terrain",
+        choices=("flat", "hills"),
+        default="flat",
+        help="地形高程（P1-A）：flat=全零平面（默认，存量战局不变）；hills=确定性丘陵"
+        "（terrace 渲染 + 移动代价 + 爬升限制；任务脚本 elevation 键可覆盖）",
+    )
     return parser.parse_args(list(argv))
 
 
@@ -156,10 +164,12 @@ def create_game(
     SELF 源自动交战指令与玩家/指挥官指令同源同路径（无需接线的直构战局保持关闭）。
     mission_id/requisition_points：V3 面板槽位内容（默认 None → 槽位不画）。
     """
+    battle = service if service is not None else create_m2_battle()
     game = Game(
         screen=screen,
-        service=service if service is not None else create_m2_battle(),
-        renderer=Renderer(screen, asset_pack=asset_pack),
+        service=battle,
+        # P1-A：Renderer 高程单一数据源（service.elevation；flat/未注入 → 渲染零改动）。
+        renderer=Renderer(screen, asset_pack=asset_pack, elevation=battle.elevation),
         commander=commander,
         demo_mode=demo_mode,
         mission_id=mission_id,
@@ -412,6 +422,16 @@ def run_frame(game: Game, dt: float) -> None:
     game.frames += 1
 
 
+def _apply_terrain(battle_service: BattleService, terrain: str, script_elevation: ElevationGrid | None) -> None:
+    """P1-A 地形高程接线：CLI --terrain hills 挂确定性丘陵；任务脚本 elevation 键
+    显式声明时后挂覆盖（脚本优先于 CLI）；flat 且脚本无覆盖 → 保持全零平面
+    （存量战局零改动）。"""
+    if terrain == "hills":
+        battle_service.elevation = generate_hills()
+    if script_elevation is not None:
+        battle_service.elevation = script_elevation
+
+
 def _print_settlement(state: CampaignState, result: MissionResult) -> None:
     """打印单任务结算摘要（文本 UI，M5 最小接线）。"""
     lost = "、".join(result.lost_unit_ids) if result.lost_unit_ids else "无"
@@ -511,6 +531,7 @@ def main(argv: Sequence[str] = ()) -> int:
             roster_ids = " ".join(m.id for m in state.roster) or "无"
             print(f"== 任务开始 {mission.mission_id}: {mission.title}（名册 {roster_ids}）==")
             battle = chain.start_mission(state)
+            _apply_terrain(battle, args.terrain, script.elevation)  # P1-A：地形高程（CLI + 脚本覆盖）
             context = ScriptContext(battle=battle, campaign=state)
             engine = ScriptEngine(script, context)
             if state.mission_index == 0:

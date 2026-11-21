@@ -14,6 +14,10 @@
   （水平居中 + 底边锚定，对齐原版 HiresOffsets 语义）；动态信息按官方文本槽位对齐
   绘制程序化文字（RP/任务与托管/dropteam 选中机甲槽/键位提示），布局缺失或零部件
   零解析时完全回退现状 HUD（逐字节不变）。
+- P1-A terrace：注入 ``elevation`` 网格（create_game 从 service.elevation 传入）且含丘陵时，
+  地形改铺 terrace 版面（顶面上移 + 南侧深色崖壁，行序绘制自然遮挡），机甲/装饰/弹丸/
+  移动标记/攻击高亮按所在 tile 高程同步上移，机甲 y 排序键改 (elevation, y)；HUD 状态行
+  选中机甲追加 ``ELEV: n``。flat/未注入时渲染输出与现状逐字节一致。
 未注入或未命中时保持原色块输出，渲染结果与未加载资产完全一致。
 """
 
@@ -25,6 +29,7 @@ from collections.abc import Sequence
 
 import pygame
 
+from pymc2.domain.elevation import ELEVATION_MAX, ElevationGrid
 from pymc2.domain.entities.mech import (
     MAP_SIZE_PX,
     MAP_TILES,
@@ -61,6 +66,10 @@ _PANEL_SLOT_PAD_X = 8
 _PANEL_SLOT_PAD_Y = 6
 _PANEL_LINE_STEP = 15
 _DROPTEAM_SLOT_COUNT = 4  # 原版 4 dropteam：选中机甲最多占 4 个槽位
+
+# P1-A terrace：tile 顶面每 1 级高程的屏幕上移量；侧面（南侧崖壁）深色正面。
+ELEVATION_STEP_PX = 10
+_CLIFF_COLOR = (40, 34, 28)
 
 
 def panel_base_offset(screen_size: tuple[int, int]) -> tuple[int, int]:
@@ -190,10 +199,17 @@ def _fill_road_dashes(surface: pygame.Surface, tile_x: int, tile_y: int) -> None
 class Renderer:
     """把 BattleService 状态绘制到屏幕（相机平移，无缩放）。"""
 
-    def __init__(self, screen: pygame.Surface, asset_pack: MC2AssetPack | None = None) -> None:
+    def __init__(
+        self,
+        screen: pygame.Surface,
+        asset_pack: MC2AssetPack | None = None,
+        elevation: ElevationGrid | None = None,
+    ) -> None:
         self.screen = screen
         self._assets = asset_pack
-        self._terrain = self._build_terrain()
+        # P1-A 高程单一数据源（create_game 从 service.elevation 注入）；None = flat 语义。
+        self._elevation = elevation
+        self._terrain, self._terrain_y_offset = self._build_terrain()
         self._decorations: tuple[Decoration, ...] = ()
         self._font: pygame.font.Font | None = None
         try:
@@ -226,12 +242,55 @@ class Renderer:
             self.screen.blit(line_surf, line_surf.get_rect(midtop=(width // 2, y)))
             y += line_surf.get_height() + 6
 
-    def _build_terrain(self) -> pygame.Surface:
-        """pack 含地面/覆盖资产 → MC2 纹理地形；否则程序化色块（逐字节不变）。"""
+    def _build_terrain(self) -> tuple[pygame.Surface, int]:
+        """pack 含地面/覆盖资产 → MC2 纹理地形；否则程序化色块（逐字节不变）。
+
+        P1-A：高程网格含丘陵时改铺 terrace 版面并返回版面 y 偏移（flat/未注入 →
+        原路径零改动，偏移 0）。"""
         assets = self._assets
         if assets is not None and assets.has_ground_assets:
-            return self._build_textured_terrain_surface(assets)
-        return _build_terrain_surface()
+            surface = self._build_textured_terrain_surface(assets)
+        else:
+            surface = _build_terrain_surface()
+        if self._elevation is None or self._elevation.is_flat():
+            return surface, 0
+        return self._terraced_terrain_surface(surface), ELEVATION_MAX * ELEVATION_STEP_PX
+
+    def _terraced_terrain_surface(self, base: pygame.Surface) -> pygame.Surface:
+        """terrace 版面（P1-A）：底图下移 ELEVATION_MAX*STEP 预留顶部抬升空间，逐 tile
+        自北向南（行序）覆盖绘制——顶面 = 原 tile 纹理区上移 e*STEP（行序使高层顶面
+        正确压住北邻低层底边），南邻更低时补深色崖壁（高度 = 高差×STEP，上缘接本 tile
+        顶面下缘、下缘接南邻顶面上缘，两端精确衔接）；地图南缘越界视为 0 → 边缘崖壁。
+        北/东/西侧高差在本投影（纯 Y 偏移）下为零宽接缝，不单独画侧面（设计文档 §5）。"""
+        assert self._elevation is not None
+        grid = self._elevation
+        offset = ELEVATION_MAX * ELEVATION_STEP_PX
+        surface = pygame.Surface((MAP_SIZE_PX, MAP_SIZE_PX + offset))
+        surface.blit(base, (0, offset))
+        for tile_y in range(MAP_TILES):
+            for tile_x in range(MAP_TILES):
+                e = grid.elevation_at((tile_x, tile_y))
+                if e <= 0:
+                    continue
+                shift = e * ELEVATION_STEP_PX
+                surface.blit(
+                    base,
+                    (tile_x * TILE_SIZE_PX, tile_y * TILE_SIZE_PX - shift + offset),
+                    pygame.Rect(tile_x * TILE_SIZE_PX, tile_y * TILE_SIZE_PX, TILE_SIZE_PX, TILE_SIZE_PX),
+                )
+                e_south = grid.elevation_at((tile_x, tile_y + 1))
+                if e_south < e:
+                    band_top = tile_y * TILE_SIZE_PX + TILE_SIZE_PX - shift + offset
+                    surface.fill(
+                        _CLIFF_COLOR,
+                        pygame.Rect(
+                            tile_x * TILE_SIZE_PX,
+                            band_top,
+                            TILE_SIZE_PX,
+                            (e - e_south) * ELEVATION_STEP_PX,
+                        ),
+                    )
+        return surface
 
     def _build_textured_terrain_surface(self, assets: MC2AssetPack) -> pygame.Surface:
         """MC2 纹理地形（Wave V1）：非道路 tile 铺 Detail 系列草地纹理（tile 哈希
@@ -297,6 +356,21 @@ class Renderer:
     def world_to_screen(self, x: float, y: float, cam_x: float, cam_y: float) -> tuple[int, int]:
         return (int(x - cam_x), int(y - cam_y))
 
+    def _tile_elevation(self, tile: tuple[int, int]) -> int:
+        """tile 高程（P1-A）：未注入网格视为 0（flat 语义，存量零改动）。"""
+        if self._elevation is None:
+            return 0
+        return self._elevation.elevation_at(tile)
+
+    def _elev_offset(self, tile: tuple[int, int]) -> int:
+        """实体按所在 tile 高程的屏幕 y 上移量（P1-A terrace）。"""
+        return self._tile_elevation(tile) * ELEVATION_STEP_PX
+
+    @staticmethod
+    def _tile_of_px(x: float, y: float) -> tuple[int, int]:
+        """世界像素坐标 → tile 坐标（与 Mech.tile 同口径）。"""
+        return (int(x) // TILE_SIZE_PX, int(y) // TILE_SIZE_PX)
+
     def render(
         self,
         service: BattleService,
@@ -317,7 +391,7 @@ class Renderer:
         调用零改动）。面板可用时槽位化呈现，否则维持现状 HUD（逐字节不变）。
         """
         self.screen.fill(_GRASS_BASE)
-        self.screen.blit(self._terrain, (-int(cam_x), -int(cam_y)))
+        self.screen.blit(self._terrain, (-int(cam_x), -int(cam_y) - self._terrain_y_offset))
         self._draw_decorations(cam_x, cam_y)
         for uid in service.selected_ids:
             mech = service.get(uid)
@@ -325,8 +399,10 @@ class Renderer:
                 self._draw_move_marker(mech.move_target, cam_x, cam_y)
         for projectile in service.projectiles:
             self._draw_projectile(projectile, cam_x, cam_y)
-        # y 排序 tie-break：y 大者后画（后绘覆盖先绘），同格/重叠时消除叠压随机感。
-        for mech in sorted(service.mechs.values(), key=lambda m: m.y):
+        # y 排序 tie-break：先按所在 tile 高程（高层后画，避免被低层前景遮挡错序），
+        # 再按 y 大者后画（后绘覆盖先绘），同格/重叠时消除叠压随机感。
+        # flat 网格高程恒 0 → 退化为纯 y 排序（存量次序不变）。
+        for mech in sorted(service.mechs.values(), key=lambda m: (self._tile_elevation(m.tile), m.y)):
             self._draw_mech(mech, cam_x, cam_y, selected=mech.id in service.selected_ids)
         for uid in service.selected_ids:
             mech = service.get(uid)
@@ -439,6 +515,7 @@ class Renderer:
 
     def _draw_mech(self, mech: Mech, cam_x: float, cam_y: float, *, selected: bool) -> None:
         sx, sy = self.world_to_screen(mech.x, mech.y, cam_x, cam_y)
+        sy -= self._elev_offset(mech.tile)  # P1-A：随所在 tile 高程同步上移
         half = _MECH_SIZE_PX // 2
         rect = pygame.Rect(sx - half, sy - half, _MECH_SIZE_PX, _MECH_SIZE_PX)
         sprite = self._mech_sprite(mech) if mech.alive else None
@@ -488,6 +565,7 @@ class Renderer:
                 cam_x,
                 cam_y,
             )
+            sy -= self._elev_offset((tile_x, tile_y))  # P1-A：丘陵 tile 上的装饰同步上移
             self.screen.blit(sprite, sprite.get_rect(center=(sx, sy)))
 
     def _draw_health_bar(self, mech: Mech, center_x: int, top: int) -> None:
@@ -506,6 +584,7 @@ class Renderer:
 
     def _draw_move_marker(self, target: tuple[float, float], cam_x: float, cam_y: float) -> None:
         sx, sy = self.world_to_screen(target[0], target[1], cam_x, cam_y)
+        sy -= self._elev_offset(self._tile_of_px(target[0], target[1]))  # P1-A：目标 tile 高程
         rect = pygame.Rect(sx - 6, sy - 6, 12, 12)
         pygame.draw.rect(self.screen, _MOVE_MARKER_COLOR, rect, 2)
         pygame.draw.line(self.screen, _MOVE_MARKER_COLOR, rect.topleft, rect.bottomright, 2)
@@ -514,6 +593,7 @@ class Renderer:
     def _draw_attack_mark(self, target: Mech, cam_x: float, cam_y: float) -> None:
         """攻击目标高亮：围绕被指定目标画一圈红色外框（M1 几何风格）。"""
         sx, sy = self.world_to_screen(target.x, target.y, cam_x, cam_y)
+        sy -= self._elev_offset(target.tile)  # P1-A：目标所在 tile 高程
         half = _MECH_SIZE_PX // 2
         rect = pygame.Rect(sx - half, sy - half, _MECH_SIZE_PX, _MECH_SIZE_PX)
         pygame.draw.rect(self.screen, _ATTACK_MARK_COLOR, rect.inflate(12, 12), 2)
@@ -540,6 +620,9 @@ class Renderer:
                 heat_text += " [SHUTDOWN]"
         names = ",".join(service.selected_ids) if service.selected_ids else "-"
         text = f"FIRE: {stance} | SEL: {names}{heat_text}"
+        if primary is not None:
+            # P1-A：选中机甲所在 tile 高程（ASCII，收进现有状态行尾部惯例）。
+            text += f" | ELEV: {self._tile_elevation(primary.tile)}"
         if auto_command:
             text += " | AUTO: ON"
         if show_hints:
@@ -550,4 +633,5 @@ class Renderer:
 
     def _draw_projectile(self, projectile: Projectile, cam_x: float, cam_y: float) -> None:
         sx, sy = self.world_to_screen(projectile.x, projectile.y, cam_x, cam_y)
+        sy -= self._elev_offset(self._tile_of_px(projectile.x, projectile.y))  # P1-A：所在 tile 高程
         pygame.draw.circle(self.screen, _PROJECTILE_COLOR, (sx, sy), 3)

@@ -11,6 +11,12 @@ tile + 移动机甲运动快照），移动机甲在本帧将进入新 tile 且�
 连续让路超过 YIELD_TIMEOUT_TICKS 强制通行（防死锁逃生阀）；两个移动机甲非互换
 不互阻（穿越语义，与 PyCC2 MC2-05 一致）。yield 状态存 service 内部 dict
 （按 mech.id 的连续被阻帧数），实体零新字段。
+
+P1-A 高程：service 恒持有 ElevationGrid（缺省全零平面，flat 快路径移动数学与存量
+一致）——上坡步进耗时按每 +1 级 ×CLIMB_COST_PER_LEVEL 复利加成（下坡 ×1.0），
+爬升限制目标 tile 高于当前 >CLIMB_MAX_DELTA 的 MOVE_TO 直接拒绝（回执沿用现有
+dispatcher 失败惯例：指令入 order_log、dispatch 返回 False）；高程不参与让路
+占位/互换判定（语义不变）。见 docs/P1A_DESIGN_20261121.md §2。
 """
 
 from __future__ import annotations
@@ -20,6 +26,7 @@ import random
 from collections.abc import Callable
 from typing import TYPE_CHECKING, NamedTuple
 
+from pymc2.domain.elevation import CLIMB_COST_PER_LEVEL, CLIMB_MAX_DELTA, ElevationGrid
 from pymc2.domain.entities.mech import MOVE_SPEED_PX_S, TILE_SIZE_PX, Faction, FireMode, Mech, Weapon
 from pymc2.domain.entities.mech_chassis import MechLocation, make_medium_chassis
 from pymc2.domain.entities.pilot import Pilot
@@ -43,6 +50,20 @@ YIELD_TIMEOUT_TICKS = 90
 def _tile_of(x: float, y: float) -> tuple[int, int]:
     """像素坐标 → tile 坐标（与 Mech.tile 同口径）。"""
     return (int(x) // TILE_SIZE_PX, int(y) // TILE_SIZE_PX)
+
+
+def _predicted_move_pos(mech: Mech, target: tuple[float, float], speed_scale: float, dt: float) -> tuple[float, float]:
+    """本帧推进后的预测位置（不落位）：与 Mech._advance_move 同式（MOVE_SPEED_PX_S ×
+    机动惩罚 × 高程加成 × dt，dist ≤ step 吸附目标）——改动移动物理必须同步此处，
+    否则让路判定相位漂移。"""
+    tx, ty = target
+    dx = tx - mech.x
+    dy = ty - mech.y
+    dist = math.hypot(dx, dy)
+    step = MOVE_SPEED_PX_S * (1.0 - mech.chassis.mobility_penalty) * speed_scale * dt
+    if dist <= step:
+        return (tx, ty)
+    return (mech.x + dx / dist * step, mech.y + dy / dist * step)
 
 
 class _MoverFrame(NamedTuple):
@@ -79,12 +100,15 @@ class BattleService:
         *,
         rng: ShotRng | None = None,
         projectile_speed_px_s: float = DEFAULT_PROJECTILE_SPEED_PX_S,
+        elevation: ElevationGrid | None = None,
     ) -> None:
         self.mechs: dict[str, Mech] = {}
         self.projectiles: list[Projectile] = []
         self.selected_ids: list[str] = []
         self._rng: ShotRng = rng if rng is not None else random.Random()
         self.projectile_speed_px_s = projectile_speed_px_s
+        # P1-A 高程：缺省全零平面（flat 快路径，移动/渲染与存量零差异）。
+        self.elevation: ElevationGrid = elevation if elevation is not None else ElevationGrid.flat()
         # M6 任务脚本钩子：每帧 tick 末尾回调（None = 不启用，M1-M5 存量零影响）。
         # 返回值声明为 object 以兼容带返回值的回调（如 ScriptEngine.tick 返回触发 id 列表）。
         self.tick_hook: Callable[[BattleService], object] | None = None
@@ -143,15 +167,44 @@ class BattleService:
         return None
 
     def move_mech(self, mech_id: str, x: float, y: float) -> bool:
-        """下达移动指令（移动即解除警戒姿态；强制关机期间被拒）。"""
+        """下达移动指令（移动即解除警戒姿态；强制关机或爬升超限被拒）。"""
         mech = self.mechs.get(mech_id)
         if mech is None or not mech.alive:
             return False
         if mech.heat.shutdown_active:
             return False
+        if not self._climb_permitted(mech, (x, y)):
+            return False
         mech.guarding = False
         mech.move_to(x, y)
         return True
+
+    def _climb_permitted(self, mech: Mech, target_px: tuple[float, float]) -> bool:
+        """P1-A 爬升限制（无寻路简化）：目标 tile 高于当前 tile 超过 CLIMB_MAX_DELTA
+        → 该段移动不可达，直接拒绝（回执沿用 dispatcher 失败惯例）。flat 恒放行。"""
+        grid = self.elevation
+        if grid.is_flat():
+            return True
+        delta = grid.elevation_at(_tile_of(*target_px)) - grid.elevation_at(mech.tile)
+        return delta <= CLIMB_MAX_DELTA
+
+    def _climb_multiplier(self, mech: Mech, target: tuple[float, float], dt: float) -> float:
+        """P1-A 上坡步进耗时加成：本帧将进入 tile 高于当前 tile 时耗时 ×CLIMB_COST_PER_LEVEL^Δ
+        （即步长速度取倒数 1/1.5^Δ，上坡变慢；下坡/平地 ×1.0 不加速）。
+
+        以基础速度预测进入 tile（_predicted_move_pos，与 Mech._advance_move 同式），
+        Δ≤0（平地/下坡）或仍在 tile 内 → ×1.0；flat 快路径恒 1.0（存量零改动）。
+        """
+        grid = self.elevation
+        if grid.is_flat():
+            return 1.0
+        entered = _tile_of(*_predicted_move_pos(mech, target, 1.0, dt))
+        if entered == mech.tile:
+            return 1.0
+        delta = grid.elevation_at(entered) - grid.elevation_at(mech.tile)
+        if delta <= 0:
+            return 1.0
+        return 1.0 / CLIMB_COST_PER_LEVEL**delta
 
     def set_fire_mode(self, mech_id: str, mode: FireMode) -> bool:
         """设置火力姿态（HOLD 后 fire_at 被拒绝直至恢复 FREE）。"""
@@ -269,7 +322,8 @@ class BattleService:
             mech.move_target = target
             return
         pre_tile = mech.tile
-        mech.tick(dt)
+        # P1-A：上坡帧步长按高程差加成（flat 恒 1.0，与 Mech.tick 默认语义一致）。
+        mech.tick(dt, move_speed_scale=self._climb_multiplier(mech, mech.move_target, dt))
         # 成功推进：进入新 tile 或到达目标 → 连续让路计数清零（tile 内移动保持计数，
         # 与 PyCC2「插值帧不触碰 yield_ticks」一致，保证超时阀跨 tile 边界仍生效）。
         if mech.move_target is None or mech.tile != pre_tile:
@@ -298,21 +352,10 @@ class BattleService:
             )
         return _OccupancySnapshot(static_tiles=static_tiles, movers=movers)
 
-    @staticmethod
-    def _frame_next_tile(mech: Mech, target: tuple[float, float], dt: float) -> tuple[int, int]:
-        """预测本帧推进后所在 tile（不落位）。
-
-        与 Mech._advance_move 同式（MOVE_SPEED_PX_S × 机动惩罚 × dt，dist ≤ step 吸附
-        目标）——改动移动物理必须同步此处，否则让路判定相位漂移。
-        """
-        tx, ty = target
-        dx = tx - mech.x
-        dy = ty - mech.y
-        dist = math.hypot(dx, dy)
-        step = MOVE_SPEED_PX_S * (1.0 - mech.chassis.mobility_penalty) * dt
-        if dist <= step:
-            return _tile_of(tx, ty)
-        return _tile_of(mech.x + dx / dist * step, mech.y + dy / dist * step)
+    def _frame_next_tile(self, mech: Mech, target: tuple[float, float], dt: float) -> tuple[int, int]:
+        """预测本帧推进后所在 tile（不落位）：与 Mech._advance_move 同式并含 P1-A 高程
+        加成（改动移动物理必须同步此处，否则让路判定相位漂移）。"""
+        return _tile_of(*_predicted_move_pos(mech, target, self._climb_multiplier(mech, target, dt), dt))
 
     def _movement_blocked(self, mech: Mech, snapshot: _OccupancySnapshot) -> bool:
         """让路判定（直线插值版）：仅在本帧将进入新 tile 的瞬间产生硬阻挡。

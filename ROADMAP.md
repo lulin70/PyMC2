@@ -185,3 +185,32 @@ MC2 对齐说明：MC2 原版无真闪避（弹道即时命中），战术靠站
   + e2e 1 文件 2 用例（真实战局 4 步槽位切片 + 回退字节比对），截图 5 张存
   docs/assets/uat_v3/。
   门禁：全量 454 passed / 0 failed + ruff format/check + mypy（28 文件）全绿。
+
+## 交付后注记（2026-11-21）：P1-A 高程切片（数据模型 + terrace 渲染 + 移动代价）
+
+- **设计文档**：[P1A_DESIGN_20261121.md](docs/P1A_DESIGN_20261121.md)（数据模型/生成
+  策略/代价与爬升语义/渲染分层/偏离裁剪/实现记录全留痕）。P1-B 视线遮挡不在本切片。
+- **ElevationGrid**（domain/elevation.py，新模块）：per-tile int 高程 0..ELEVATION_MAX=3
+  （钳制存取、越界视为 0、O(1) is_flat 快路径）；三种构造——全零平面（默认）、显式
+  40×40 行数组、确定性丘陵 `generate_hills`（md5 哈希 value noise 双线性插值，同 seed
+  同网格；道路行/列与 10 个出生点 Chebyshev ±2 保护区归零，默认战局走廊全零可用，
+  实测四档高程均有分布）；`climb_allowed`：目标高于出发 >1 级不可爬（下坡不限）。
+- **移动代价**：service 恒持网格（缺省 flat，移动数学存量零差异）；上坡耗时每 +1 级
+  ×1.5 复利（以步长速度倒数 1/1.5^Δ 实现，下坡 ×1.0 不加速），跨入 tile 帧判定、
+  `_frame_next_tile` 同步加成防让路相位漂移；爬升限制（无寻路简化）：MOVE_TO 目标
+  tile 高于当前 >1 级直接拒绝——回执沿用 dispatcher 失败惯例（指令入 order_log、
+  dispatch 返回 False）；让路占位/互换判定与高程解耦（语义不变）。
+- **terrace 渲染**：`--terrain {flat,hills}`（默认 flat）+ 任务脚本可选 `elevation` 键
+  （"hills" 关键字或显式行数组；缺失/非法 → 不覆盖，CLI hills 不被清零）；注入丘陵时
+  地形改铺 terrace 版面（顶部加高 30px 防裁切，行序顶面上移 e×10px 自然遮挡 + 南侧
+  深色崖壁与南邻顶面精确衔接，北/东/西高差为零宽接缝不画侧面）；机甲/装饰/弹丸/
+  移动标记/攻击高亮按所在 tile 高程同步上移，机甲 y 排序键改 (elevation, y)；V3 面板
+  blit 序不变；HUD 状态行选中机甲追加 ` | ELEV: n`（未选中不追加）。
+- **行为保持实证**：flat 下渲染/移动路径走原分支——stash 对照实验显示 v1/v3 存量 e2e
+  截图与改动前代码逐字节一致（净变化 None）；存量 UAT 截图的 git diff 为 4dd18c9 改
+  键位提示行以来未重存的历史脏状态，本次全量运行一并刷新。
+- 验收：单测 51 例（数据模型 21 + 移动代价与爬升 13 + terrace 数学/HUD/CLI 17）+
+  e2e 2 条（hills 真实战局：顶面上移进北邻区/崖壁色像素断言、爬 1 级落位且实体同步
+  上移、爬升 >1 被拒且指令入日志；flat 回归：无高程注入 vs flat 网格全帧字节一致 +
+  移动公式逐帧 4.8px 不变 + 道路像素），截图 4 张存 docs/assets/uat_p1a/。
+  门禁：全量 511 passed / 0 failed + ruff format/check + mypy（29 文件）全绿。

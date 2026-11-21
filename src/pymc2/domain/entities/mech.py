@@ -134,22 +134,26 @@ class Mech:
         """下达移动指令（下个 tick 起以固定速度直线移动）。"""
         self.move_target = (x, y)
 
-    def tick(self, dt: float) -> None:
-        """推进一帧：武器冷却 + 热量散热 + 朝目标点移动；阵亡后静止。"""
+    def tick(self, dt: float, *, move_speed_scale: float = 1.0) -> None:
+        """推进一帧：武器冷却 + 热量散热 + 朝目标点移动；阵亡后静止。
+
+        move_speed_scale 为移动步长加成（P1-A 上坡耗时，战斗层按高程差计算传入；
+        默认 1.0，实体自身无高程依赖，存量调用语义不变）。
+        """
         if not self.alive:
             return
         self.weapon.tick(dt)
         self.heat.tick_cooling(dt)
         target = self.move_target
         if target is not None:
-            self._advance_move(dt, target)
+            self._advance_move(dt, target, move_speed_scale)
 
-    def _advance_move(self, dt: float, target: tuple[float, float]) -> None:
+    def _advance_move(self, dt: float, target: tuple[float, float], speed_scale: float = 1.0) -> None:
         tx, ty = target
         dx = tx - self.x
         dy = ty - self.y
         dist = math.hypot(dx, dy)
-        step = MOVE_SPEED_PX_S * (1.0 - self.chassis.mobility_penalty) * dt
+        step = MOVE_SPEED_PX_S * (1.0 - self.chassis.mobility_penalty) * speed_scale * dt
         if dist <= step:
             self.x, self.y = tx, ty
             self.move_target = None
