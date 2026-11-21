@@ -357,3 +357,31 @@ MC2 对齐说明：MC2 原版无真闪避（弹道即时命中），战术靠站
   真实 Madcat 资产 UAT 2 张（真管线像素验证）。
   门禁：全量 **675 passed / 0 failed**（635 存量零语义改动 + 40 新增）+ ruff
   format/check + mypy（37 文件）全绿。MC2 资产零入库（.ase 仅本机缓存）。
+
+## 交付后注记（2026-11-21）：V11 地表观感切片（官方地表纹理池扩充与分类）
+
+- **设计文档**：[V11_GROUND_POOL_DESIGN_20261121.md](docs/V11_GROUND_POOL_DESIGN_20261121.md)
+  （远端勘测清单/选型表/分类规则/降级矩阵/实现记录全留痕）。用户反馈真机 hills
+  地形呈橙/青马赛克拼花——根因：V1 grass 池把官方 Detail_10000~40000（棕橙/青灰
+  detail 噪声叠加层，非地表底色）逐 tile 随机铺。
+- **远端勘测结论**（Trees API）：`Data/Textures/64` 远端即 11 张全集（与旧缓存一致，
+  无草/泥地表色）；真地表纹理在 `Random_Maps/*.jpg`（Forest/Desert/Tundra/Volcanic/
+  Lunar 生物群系整图 1536²，avg 色与 textures.fit 74 个 TerrainType 的官方
+  TerrainTacRGB 族吻合）与 `Defaults/*.tga`（缺省水面族）；`undefined.tga` 为品红
+  占位、mc2_XX.detail 近全黑噪声、.txm 为未解析二进制容器。
+- **资产扩充**（~/.pymc2/mc2-assets 缓存，零入库仓库）：Random_Maps 五图 + Defaults
+  四水共 9 张（≤25 上限），保持远端目录结构与命名，PIL 逐一验证。
+- **族池分类**（infrastructure/mc2_assets.py）：`GROUND_FAMILY_KEYWORDS` 命名规则
+  驱动（water>grass>dirt>rock>cement，首命中归族，Water_Desert 沙漠水面不被 dirt
+  误收）+ `LEGACY_GROUND_PREFIX="detail"` 旧缓存回退族；Random_Maps JPG 按 4×4
+  网格确定性派生 16 帧 128px（不落盘）；ground_pool grass/dirt 缺族回退 detail
+  （旧缓存行为逐像素兼容），rock/water 暴露接口、cement 城镇地形保持不暴露。
+  实测真缓存池：grass 16 / dirt 16 / rock 48 / water 4 / road 6。
+- **渲染接线**（presentation/renderer.py）：草地 tile 走 grass 族池（缺族回退
+  dirt→程序化），道路 tile 底色改 dirt 族泥径（缺族回退草地池），2lanedirt overlay
+  蒙版逻辑零改动；cement/water/rock 不接渲染路径。
+- 验收：单测 +9 + e2e +2（多族实战像素断言 + 旧单族缓存逐像素回归），截图
+  docs/assets/uat_v11/（fixture 3 张 + 真机 hills 冒烟 real_*.png 3 张）。
+  门禁：全量 **686 passed / 0 failed**（675 存量零语义改动 + 11 新增）+ ruff
+  format/check + mypy（37 文件）全绿。MC2 资产零入库（新资产仅本机缓存）。
+  观感遗留：道路十字交叉细亮线 = overlay 直道帧接缝（V1 遗留，后续道路接缝切片处理）。

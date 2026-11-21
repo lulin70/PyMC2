@@ -23,7 +23,12 @@ import pytest
 from PIL import Image
 
 from helpers.ase_fixture import write_arrow_ase, write_arrow_texture
-from pymc2.infrastructure.mc2_assets import ASSETS_ENV_VAR, MC2AssetPack, default_pack_root
+from pymc2.infrastructure.mc2_assets import (
+    ASSETS_ENV_VAR,
+    MC2AssetPack,
+    default_pack_root,
+    ground_family,
+)
 
 SIZE_PX = (32, 32)
 MADCAT_COLOR = (200, 40, 40, 255)
@@ -579,3 +584,164 @@ class TestResolveEnvironment:
         assert first.get_size() == (16, 16)
         assert pack.scaled_environment_sprite("tree", 16) is first
         assert pack.scaled_environment_sprite("zzz", 16) is None
+
+
+# V11 地表族池 fixture 色板（JPG 生物群系 + Defaults 水面；真资产零入库）
+FOREST_GREEN = (60, 120, 40)
+DESERT_TAN = (170, 130, 70)
+VOLCANIC_GRAY = (80, 75, 70)
+WATER_BLUE = (40, 80, 110)
+MAGENTA_UNDEFINED = (255, 0, 255)
+
+
+def write_jpg(path: Path, color: tuple[int, int, int], size: tuple[int, int] = (64, 64)) -> None:
+    """现场生成 JPG 生物群系 fixture（纯色），不提交任何真实 MC2 资产。"""
+    path.parent.mkdir(parents=True, exist_ok=True)
+    Image.new("RGB", size, color).save(path)
+
+
+def pool_avg_color(pool: tuple[pygame.Surface, ...], seed: int) -> tuple[int, int, int]:
+    """池内 seed 选中帧的均值 RGB（JPEG 有损/缩放插值下用均值断言族色主导）。"""
+    surface = pool[seed % len(pool)]
+    width, height = surface.get_size()
+    pixels = [surface.get_at((x, y))[:3] for x in range(0, width, 4) for y in range(0, height, 4)]
+    return tuple(round(sum(p[i] for p in pixels) / len(pixels)) for i in range(3))
+
+
+@pytest.fixture()
+def biome_root(tmp_path: Path) -> Path:
+    """V11 生物群系 mini pack：Forest/Desert/Volcanic JPG + undefined 品红占位 +
+    Cement（城镇不暴露）+ Defaults 水面（Water_Desert 验证 water 优先于 dirt）。"""
+    root = tmp_path / "mc2-biome"
+    biome = root / "Data" / "Textures" / "Random_Maps"
+    write_jpg(biome / "Random_Forest.jpg", FOREST_GREEN)
+    write_jpg(biome / "Random_Desert.jpg", DESERT_TAN)
+    write_jpg(biome / "Random_Volcanic.jpg", VOLCANIC_GRAY)
+    write_tga(root / "Data" / "Textures" / "64" / "undefined.tga", MAGENTA_UNDEFINED)
+    write_tga(root / "Data" / "Textures" / "64" / "Cement_1.tga", (128, 128, 128, 255))
+    write_tga(
+        root / "Data" / "Textures" / "Defaults" / "Water_Desert.tga", (WATER_BLUE[0], WATER_BLUE[1], WATER_BLUE[2], 255)
+    )
+    return root
+
+
+class TestGroundFamilyPools:
+    """V11 地表族池：关键词分类真值表 / JPG 派生确定性 / 旧缓存 detail 回退 /
+    cement 与 undefined 排除 / Defaults 水族归 water。"""
+
+    def test_family_truth_table(self) -> None:
+        """关键词首命中归族：water 优先于 dirt（Water_Desert）、detail 前缀回退、
+        杂项（undefined/default_detail/mine/wake/feet）不入族。"""
+        assert ground_family("random_forest") == "grass"
+        assert ground_family("random_desert") == "dirt"
+        assert ground_family("random_tundra") == "rock"
+        assert ground_family("random_volcanic") == "rock"
+        assert ground_family("random_lunar") == "rock"
+        assert ground_family("cement_1") == "cement"
+        assert ground_family("water_desert") == "water"
+        assert ground_family("water_ocean") == "water"
+        assert ground_family("detail_10000") == "detail"
+        assert ground_family("  Detail_20000.TGA ".lower()) == "detail"
+        assert ground_family("undefined") is None
+        assert ground_family("default_detail") is None
+        assert ground_family("mine_00") is None
+        assert ground_family("wake_0000") is None
+        assert ground_family("feet0000") is None
+        assert ground_family("") is None
+
+    def test_biome_frames_derived_deterministic_across_loads(self, biome_root: Path) -> None:
+        """JPG 派生确定性：64² 源 → 16 帧 16²；两次 load 同帧字节相等。"""
+        pack = MC2AssetPack.load(biome_root)
+        assert pack is not None
+        grass = pack.ground_pool("grass")
+        assert len(grass) == 16
+        assert grass[0].get_size() == (16, 16)
+        reload = MC2AssetPack.load(biome_root)
+        assert reload is not None
+        for frame, fresh in zip(grass, reload.ground_pool("grass"), strict=True):
+            assert pygame.image.tobytes(frame, "RGBA") == pygame.image.tobytes(fresh, "RGBA")
+
+    def test_biome_frames_scale_with_source_size(self, tmp_path: Path) -> None:
+        """帧边长参数化：128² 源 → 32² 帧（min(128, w//4)）；1536² 源 → 128² 帧。"""
+        root = tmp_path / "mc2-biome-size"
+        write_jpg(root / "Data" / "Textures" / "Random_Maps" / "Random_Forest.jpg", FOREST_GREEN, (128, 128))
+        write_jpg(root / "Data" / "Textures" / "Random_Maps" / "Random_Desert.jpg", DESERT_TAN, (1536, 1536))
+        pack = MC2AssetPack.load(root)
+        assert pack is not None
+        assert pack.ground_pool("grass")[0].get_size() == (32, 32)
+        assert pack.ground_pool("dirt")[0].get_size() == (128, 128)
+
+    def test_family_pools_classified_by_keywords(self, biome_root: Path) -> None:
+        """族池按关键词归类：grass/dirt 各 16 帧、rock 16 帧、water 1 张（Defaults
+        Water_Desert 归 water 非 dirt）；undefined 与 Cement 不入任何池。"""
+        pack = MC2AssetPack.load(biome_root)
+        assert pack is not None
+        assert len(pack.ground_pool("grass")) == 16
+        assert len(pack.ground_pool("dirt")) == 16
+        assert len(pack.ground_pool("rock")) == 16
+        assert len(pack.ground_pool("water")) == 1
+        assert pack.ground_pool("cement") == ()  # 城镇地形不暴露
+        grass_avg = pool_avg_color(pack.ground_pool("grass"), 0)
+        assert grass_avg[1] > grass_avg[0]  # 绿主导（JPEG 有损下用通道关系断言）
+        dirt_avg = pool_avg_color(pack.ground_pool("dirt"), 0)
+        assert dirt_avg[0] > dirt_avg[1]  # 沙棕红主导
+        water_color = ground_color(pack, "water", 0)
+        assert water_color[:3] == WATER_BLUE
+
+    def test_legacy_cache_degrades_to_detail_pool(self, terrain_root: Path) -> None:
+        """旧缓存（仅 Detail/Cement/Water_ocean）降级：grass/dirt 池 = detail 族
+        （同序同对象，V1 行为逐像素兼容）；rock 池空；cement 恒 None。"""
+        pack = MC2AssetPack.load(terrain_root)
+        assert pack is not None
+        assert pack.ground_pool("grass") == pack.ground_pool("dirt")
+        assert len(pack.ground_pool("grass")) == 3
+        assert pack.ground_pool("rock") == ()
+        assert pack.resolve_ground("cement") is None
+        for seed in range(3):
+            assert ground_color(pack, "grass", seed) == DETAIL_COLORS[seed]
+            assert ground_color(pack, "dirt", seed) == DETAIL_COLORS[seed]
+
+    def test_undefined_placeholder_excluded_from_fallback(self, tmp_path: Path) -> None:
+        """undefined 品红占位不入 detail 回退池（V1 起既有语义，V11 分类下保持）。"""
+        root = tmp_path / "mc2-undefined"
+        ground = root / "Data" / "Textures" / "64"
+        write_tga(ground / "Detail_10000.tga", DETAIL_COLORS[0])
+        write_tga(ground / "undefined.tga", MAGENTA_UNDEFINED)
+        pack = MC2AssetPack.load(root)
+        assert pack is not None
+        assert len(pack.ground_pool("grass")) == 1
+        assert ground_color(pack, "grass", 0) == DETAIL_COLORS[0]
+
+    def test_defaults_misc_stays_out_of_pools(self, tmp_path: Path) -> None:
+        """Defaults 杂项（Mine/Wake/feet/default_detail）入索引不入池。"""
+        root = tmp_path / "mc2-defaults-misc"
+        defaults = root / "Data" / "Textures" / "Defaults"
+        write_tga(defaults / "Mine_00.tga", (90, 90, 90, 255))
+        write_tga(defaults / "default_detail.tga", (10, 10, 10, 255))
+        pack = MC2AssetPack.load(root)
+        assert pack is not None
+        assert pack.has_ground_assets  # TGA 已收录
+        for kind in ("grass", "dirt", "rock", "water"):
+            assert pack.ground_pool(kind) == ()
+
+    def test_corrupt_jpg_skipped_without_blocking(self, tmp_path: Path) -> None:
+        """损坏 JPG 逐文件跳过（不阻断整包加载），其余族池照常构建。"""
+        root = tmp_path / "mc2-broken-jpg"
+        biome = root / "Data" / "Textures" / "Random_Maps"
+        biome.mkdir(parents=True)
+        (biome / "Random_Forest.jpg").write_bytes(b"not-a-jpg")
+        write_jpg(biome / "Random_Desert.jpg", DESERT_TAN)
+        pack = MC2AssetPack.load(root)
+        assert pack is not None
+        assert pack.ground_pool("grass") == ()
+        assert len(pack.ground_pool("dirt")) == 16
+
+    def test_biome_only_pack_counts_as_ground_assets(self, tmp_path: Path) -> None:
+        """仅生物群系 JPG 的 pack 也算有效加载：has_ground_assets True、grass 可解析。"""
+        root = tmp_path / "mc2-biome-only"
+        write_jpg(root / "Data" / "Textures" / "Random_Maps" / "Random_Forest.jpg", FOREST_GREEN)
+        pack = MC2AssetPack.load(root)
+        assert pack is not None
+        assert pack.has_ground_assets
+        assert pack.resolve_mech_sprite("px-01") is None
+        assert pack.resolve_ground("grass", 5) is not None

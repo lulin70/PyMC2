@@ -16,6 +16,12 @@
 - ``Data/Textures/64/*.tga``：地面基础纹理（Wave V1）——**alpha 通道是高光/细节
   通道而非透明度**（Water_ocean 全 0、Detail 系列约 48，均非抠图），加载时强制
   置不透明，否则按 alpha 合成会近全黑；
+- ``Data/Textures/Defaults/*.tga``：官方缺省水面族（V11 扫描扩展，同 64 的 opaque
+  语义）——Water_{Ocean,Lake,Desert,Stormy} 入 water 族池；Mine/Wake/feet 等杂项
+  不命中任何族仅入索引不进池；
+- ``Data/Textures/Random_Maps/*.jpg``：随机地图生物群系整图（V11 地表观感主来源，
+  1536² JPEG）——按固定 4×4 网格确定性派生 128px tile 帧进地表族池（草=Forest、
+  泥=Desert、岩=Volcanic/Lunar/Tundra），不落盘派生产物；
 - ``Data/Textures/64Overlays/*.tga``：道路/覆盖瓦片序列（Wave V1）——alpha 是
   形状蒙版（路体外 ≤140 软边、路体外 0），按原生 alpha 合成；
 - ``Data/Objects/*.fit``：机甲/物体定义（FITini 文本，由 ``fit_parser`` 独立解析，
@@ -26,10 +32,13 @@
 （渲染层回退程序化色块）。root 不存在 / 无 Data 目录 / 扫描零命中 → ``load`` 返回 None，
 调用方优雅降级，渲染输出与未加载状态完全一致。
 
-Wave V1 地形合成接口：
-- ``resolve_ground(terrain_kind, seed)``：grass→Data/Textures/64 的 Detail 系列、
-  road→64Overlays 的 2lanedirt 序列（按帧号排序）、water→Water_ocean；seed 取模
-  选帧（同 seed 同结果，帧内确定性）；Cement 系列留作未来城镇地形不对外暴露；
+Wave V1/V11 地形合成接口：
+- ``ground_pool(terrain_kind)``：V11 起按族分类（grass/dirt/rock/water/cement，
+  ``GROUND_FAMILY_KEYWORDS`` 命名规则驱动）——grass=Random_Maps Forest 派生帧、
+  dirt=Desert 派生帧、rock=Volcanic/Lunar/Tundra 派生帧、water=Water 系列、
+  road=64Overlays 的 2lanedirt 序列（按帧号排序）；缺族回退 detail 系列（旧缓存
+  行为兼容），Cement 城镇地形不对外暴露；``resolve_ground(terrain_kind, seed)`` 按
+  seed 取模选帧（同 seed 同结果，帧内确定性）；Water 仅留接口不接渲染；
 - ``resolve_environment(kind)``：``A_*`` 物件精灵，kind 经别名表（tree/jungle_tree/
   greenhouse/mech_wreck 等）→ ``_x``/``_dam`` 后缀派生 Dam/X 摧毁变体 → 包含匹配；
 - 机甲 ``resolve_mech_sprite`` 匹配链零改动；damaged=True 时派生 dam/x 变体 stem
@@ -55,11 +64,14 @@ from pymc2.infrastructure.ase_parser import AseParseError, parse_ase
 from pymc2.infrastructure.mesh_render import HEADING_STEPS, render_heading_frames
 
 # 扫描目录（相对 Data/）：256 精灵优先于 128（同 stem 保留先命中者），Art 立绘兜底；
-# Textures/64 地面基础纹理 + Textures/64Overlays 道路覆盖序列（Wave V1 地形合成）。
+# Textures/64 地面基础纹理 + Textures/Defaults 缺省水面族 + Textures/Random_Maps
+# 生物群系整图（V11 地表族池）+ Textures/64Overlays 道路覆盖序列（Wave V1 地形合成）。
 SPRITE_DIR_256 = Path("TGL/256")
 SPRITE_DIR_128 = Path("TGL/128")
 ART_DIR = Path("Art")
 GROUND_DIR = Path("Textures/64")
+DEFAULTS_DIR = Path("Textures/Defaults")
+BIOME_DIR = Path("Textures/Random_Maps")
 OVERLAY_DIR = Path("Textures/64Overlays")
 
 # 默认资产根探测：环境变量优先，其次本机缓存目录（稀疏 checkout 由用户自行放置）。
@@ -77,12 +89,29 @@ CHASSIS_SPRITE_NAMES: dict[str, str] = {
 
 _ID_SUFFIX_RE = re.compile(r"-?\d+$")
 
-# Wave V1 地形合成：terrain_kind → 索引筛选前缀（小写 stem）。Cement 系列留作未来
-# 城镇地形不对外暴露（resolve_ground 返回 None）；undefined 为官方杂项纹理不消费。
-GRASS_STEM_PREFIX = "detail"
-WATER_STEM_PREFIX = "water"
+# V11 地表纹理族分类（关键词首命中归族，来源勘测见 docs/V11_GROUND_POOL_DESIGN_20261121.md
+# §2/§4）：Random_Maps 生物群系整图 + Defaults 水面 + 64 的 Cement/Water 按官方命名族
+# 写死；Cement 城镇地形族分类后仍不对外暴露（ground_pool 恒空池，V2+ 再接）。
+GROUND_FAMILY_KEYWORDS: tuple[tuple[str, str], ...] = (
+    # water 首位：Defaults/Water_Desert.tga（官方沙漠水面）不得被 dirt 的 desert 误收
+    ("water", "water"),
+    ("grass", "forest"),
+    ("dirt", "desert"),
+    ("rock", "volcanic"),
+    ("rock", "lunar"),
+    ("rock", "tundra"),
+    ("cement", "cement"),
+)
+# 旧缓存回退族：Detail_10000~40000（官方 detail 噪声叠加层，V1 起 grass 池成员）。
+# startswith 精确前缀，"default_detail" 等含 detail 子串的杂项不误入。
+LEGACY_GROUND_PREFIX = "detail"
 ROAD_SEQUENCE_PREFIX = "2lanedirt"
-GROUND_TERRAIN_KINDS = ("grass", "road", "water")
+GROUND_TERRAIN_KINDS = ("grass", "dirt", "rock", "road", "water")
+
+# 生物群系整图 → 地表 tile 帧派生参数（确定性，无随机数）：4×4 网格均匀取样，
+# 帧边长 ≤128px（1536² 整图 → 16 帧 128px；小图按比例缩格）。
+BIOME_FRAME_GRID = 4
+BIOME_FRAME_MAX_PX = 128
 
 # 道路覆盖序列 stem 解析：小写 stem = 前缀 + 帧号（如 2lanedirt0003）。
 _OVERLAY_STEM_RE = re.compile(r"^(.+?)(\d+)$")
@@ -299,6 +328,42 @@ def _sprite_name_candidates(chassis_kind: str) -> tuple[str, ...]:
     return (kind,)  # 自造资产/扩展类型：按原样参与精确与包含匹配
 
 
+def ground_family(stem: str) -> str | None:
+    """小写 stem → 地表纹理族（V11）：关键词表首命中 → detail 旧缓存回退族 → None。
+
+    None（undefined 品红占位、Mine/Wake/feet/default_detail 杂项）不入任何地表池。"""
+    key = stem.strip().lower()
+    for family, keyword in GROUND_FAMILY_KEYWORDS:
+        if keyword in key:
+            return family
+    if key.startswith(LEGACY_GROUND_PREFIX):
+        return LEGACY_GROUND_PREFIX
+    return None
+
+
+def _derive_biome_frames(path: Path) -> tuple[pygame.Surface, ...]:
+    """生物群系整图 → 固定网格 tile 帧（V11）：``BIOME_FRAME_GRID²`` 个均匀取样块，
+    帧边长 = min(BIOME_FRAME_MAX_PX, w//grid, h//grid)（小图自动缩格），行主序排列；
+    派生确定性（同图同帧序，无随机数），损坏/零尺寸文件返回空元组（不阻断加载）。"""
+    try:
+        with Image.open(path) as image:
+            rgba = image.convert("RGBA")
+    except Exception:  # noqa: BLE001 - 单张损坏 JPG 跳过，不阻断整包加载
+        return ()
+    width, height = rgba.size
+    side = min(BIOME_FRAME_MAX_PX, width // BIOME_FRAME_GRID, height // BIOME_FRAME_GRID)
+    if side <= 0:
+        return ()
+    xs = [(column * (width - side)) // (BIOME_FRAME_GRID - 1) for column in range(BIOME_FRAME_GRID)]
+    ys = [(row * (height - side)) // (BIOME_FRAME_GRID - 1) for row in range(BIOME_FRAME_GRID)]
+    frames: list[pygame.Surface] = []
+    for y in ys:
+        for x in xs:
+            patch = rgba.crop((x, y, x + side, y + side))
+            frames.append(pygame.image.frombuffer(patch.tobytes(), patch.size, "RGBA"))
+    return tuple(frames)
+
+
 def _load_surface(path: Path, *, opaque: bool = False) -> pygame.Surface | None:
     """PIL 读 TGA → pygame RGBA Surface（有显示面时 convert_alpha 提速）；损坏文件跳过。
 
@@ -332,11 +397,14 @@ class MC2AssetPack:
         sprites: dict[str, pygame.Surface],
         ground_tiles: dict[str, pygame.Surface] | None = None,
         overlay_sequences: dict[str, tuple[pygame.Surface, ...]] | None = None,
+        ground_sequences: dict[str, tuple[pygame.Surface, ...]] | None = None,
     ) -> None:
         self.root = root
         self._sprites = sprites
         self._ground_tiles = ground_tiles if ground_tiles is not None else {}
         self._overlay_sequences = overlay_sequences if overlay_sequences is not None else {}
+        # V11 生物群系整图派生帧索引：stem → 固定网格 tile 帧（Random_Maps JPG 派生）。
+        self._ground_sequences = ground_sequences if ground_sequences is not None else {}
         self.tga_count = (
             len(sprites) + len(self._ground_tiles) + sum(len(frames) for frames in self._overlay_sequences.values())
         )  # pack 统计：成功索引的 TGA 数量
@@ -377,7 +445,7 @@ class MC2AssetPack:
                     sprites[stem] = surface
         ground_tiles: dict[str, pygame.Surface] = {}
         overlay_frames: dict[str, list[tuple[int, pygame.Surface]]] = {}
-        for rel_dir, opaque in ((GROUND_DIR, True), (OVERLAY_DIR, False)):
+        for rel_dir, opaque in ((GROUND_DIR, True), (DEFAULTS_DIR, True), (OVERLAY_DIR, False)):
             directory = data / rel_dir
             if not directory.is_dir():
                 continue
@@ -397,9 +465,18 @@ class MC2AssetPack:
         overlay_sequences = {
             prefix: tuple(surface for _, surface in sorted(frames)) for prefix, frames in overlay_frames.items()
         }
-        if not sprites and not ground_tiles and not overlay_sequences:
+        ground_sequences: dict[str, tuple[pygame.Surface, ...]] = {}
+        biome_directory = data / BIOME_DIR
+        if biome_directory.is_dir():
+            for path in sorted(biome_directory.iterdir()):
+                if not path.is_file() or path.suffix.lower() != ".jpg":
+                    continue
+                frames = _derive_biome_frames(path)
+                if frames:
+                    ground_sequences[path.stem.lower()] = frames
+        if not sprites and not ground_tiles and not ground_sequences and not overlay_sequences:
             return None
-        return cls(base, sprites, ground_tiles, overlay_sequences)
+        return cls(base, sprites, ground_tiles, overlay_sequences, ground_sequences)
 
     def resolve_mech_sprite(self, chassis_kind: str, *, damaged: bool = False) -> pygame.Surface | None:
         """机甲模板/名 → 精灵：精确 stem → 包含匹配（大小写不敏感）→ None；结果缓存。
@@ -538,7 +615,7 @@ class MC2AssetPack:
     @property
     def has_ground_assets(self) -> bool:
         """是否收录地面/覆盖资产（渲染层据此切换纹理地形与程序化色块）。"""
-        return bool(self._ground_tiles) or bool(self._overlay_sequences)
+        return bool(self._ground_tiles) or bool(self._overlay_sequences) or bool(self._ground_sequences)
 
     @property
     def button_layout(self) -> ButtonLayout | None:
@@ -556,23 +633,37 @@ class MC2AssetPack:
         self._button_layout = _build_button_layout(sections, self._sprites)
         return self._button_layout
 
+    def _family_pool(self, family: str) -> tuple[pygame.Surface, ...]:
+        """族 → 候选帧元组（V11）：该族生物群系 JPG 派生帧（stem 排序 + 帧行主序）在前，
+        该族 TGA（stem 排序）在后；来源缺省返回空元组（由调用方决定回退链）。"""
+        sequences = tuple(
+            frame
+            for stem in sorted(self._ground_sequences)
+            if ground_family(stem) == family
+            for frame in self._ground_sequences[stem]
+        )
+        tiles = tuple(self._ground_tiles[stem] for stem in sorted(self._ground_tiles) if ground_family(stem) == family)
+        return sequences + tiles
+
     def ground_pool(self, terrain_kind: str) -> tuple[pygame.Surface, ...]:
-        """terrain_kind → 候选纹理元组（grass=Detail 系列 / road=2lanedirt 按帧号 /
-        water=Water 系列按 stem 排序，结果确定）；未登记 kind（含 Cement 城镇地形）
-        或索引为空 → 空元组。"""
+        """terrain_kind → 候选纹理元组（V11 族池）：grass=Forest 派生帧（缺族回退
+        detail 系列）、dirt=Desert 派生帧（缺族回退 detail 系列）、rock=Volcanic/
+        Lunar/Tundra 派生帧、water=Water 系列（64 + Defaults）、road=2lanedirt 按
+        帧号；Cement 城镇地形与未登记 kind 恒空池。回退链保证旧缓存（仅 Detail/
+        Cement）行为与 V1 逐像素一致（结果确定，seed 取模选张帧内确定性）。"""
         kind = terrain_kind.strip().lower()
         cached = self._ground_pools.get(kind)
         if cached is not None:
             return cached
         pool: tuple[pygame.Surface, ...] = ()
         if kind == "grass":
-            pool = tuple(
-                self._ground_tiles[stem] for stem in sorted(self._ground_tiles) if stem.startswith(GRASS_STEM_PREFIX)
-            )
+            pool = self._family_pool("grass") or self._family_pool(LEGACY_GROUND_PREFIX)
+        elif kind == "dirt":
+            pool = self._family_pool("dirt") or self._family_pool(LEGACY_GROUND_PREFIX)
+        elif kind == "rock":
+            pool = self._family_pool("rock")
         elif kind == "water":
-            pool = tuple(
-                self._ground_tiles[stem] for stem in sorted(self._ground_tiles) if stem.startswith(WATER_STEM_PREFIX)
-            )
+            pool = self._family_pool("water")
         elif kind == "road":
             pool = self._overlay_sequences.get(ROAD_SEQUENCE_PREFIX, ())
         self._ground_pools[kind] = pool

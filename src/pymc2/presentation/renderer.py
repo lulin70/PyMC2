@@ -3,8 +3,9 @@
 零外部资产：地形由 tile 坐标确定性哈希生成色块，机甲/血条/选中框均为几何绘制。
 可选注入 MC2AssetPack（本地 MC2 资产，infrastructure 层加载）：
 - 机甲命中精灵时按格子尺寸缩放 blit（血条/选中框/HUD 仍程序化）；
-- Wave V1 地形合成：pack 含地面/覆盖资产时改铺 MC2 纹理（Detail 系列草地 +
-  2lanedirt 道路 overlay，接缝观感优先选帧），pack 无地面资产时地形保持原色块；
+- Wave V1 地形合成：pack 含地面/覆盖资产时改铺 MC2 纹理（V11 起族池分类：草地=
+  Forest 派生帧/旧缓存 detail 系列、道路底色=dirt 族泥径 + 2lanedirt 道路 overlay，
+  接缝观感优先选帧），pack 无地面资产时地形保持原色块；
 - 环境点缀：``plan_decorations`` 确定性撒点 + ``set_decorations`` 注入，非道路
   空 tile 撒树/房精灵，纯装饰不阻挡移动不参与命中（对齐让路协商语义）；
 - Wave V2 机甲受损变体：``MECH_DAMAGED_HULL_RATIO`` 以下存活机甲改用 damaged 精灵
@@ -300,9 +301,10 @@ class Renderer:
         return surface
 
     def _build_textured_terrain_surface(self, assets: MC2AssetPack) -> pygame.Surface:
-        """MC2 纹理地形（Wave V1）：非道路 tile 铺 Detail 系列草地纹理（tile 哈希
-        确定性选张），道路 tile 以草皮为底叠 2lanedirt overlay（接缝优先选帧）。
-        单 tile 解析失败逐格回退程序化色块/虚线（部分资产包优雅降级）。"""
+        """MC2 纹理地形（Wave V1）：非道路 tile 铺 grass 族纹理（V11 Forest 派生帧，
+        旧缓存 detail 系列；tile 哈希确定性选张），道路 tile 以 dirt 族泥径为底叠
+        2lanedirt overlay（接缝优先选帧）。单 tile 解析失败逐格回退程序化色块/虚线
+        （部分资产包优雅降级）。"""
         surface = pygame.Surface((MAP_SIZE_PX, MAP_SIZE_PX))
         for tile_y in range(MAP_TILES):
             for tile_x in range(MAP_TILES):
@@ -323,8 +325,11 @@ class Renderer:
         tile_y: int,
         seed: int,
     ) -> None:
-        """草地 tile：Detail 系列纹理缩放到格子尺寸；未命中回退哈希草色。"""
+        """草地 tile：V11 族池 grass 纹理（Forest 派生帧，旧缓存回退 detail 系列）
+        缩放到格子尺寸；缺 grass 池回退 dirt 池，仍缺回退哈希草色。"""
         texture = assets.scaled_ground_tile("grass", seed, TILE_SIZE_PX)
+        if texture is None:
+            texture = assets.scaled_ground_tile("dirt", seed, TILE_SIZE_PX)
         if texture is not None:
             surface.blit(texture, rect.topleft)
         else:
@@ -339,9 +344,12 @@ class Renderer:
         tile_y: int,
         seed: int,
     ) -> None:
-        """道路 tile：草皮底 + 2lanedirt overlay 叠加（tile 坐标确定性选帧）；overlay
-        整体缺失时回退程序化路色 + 虚线（与现状逐像素一致）。"""
-        base = assets.scaled_ground_tile("grass", seed, TILE_SIZE_PX)
+        """道路 tile：V11 底色改 dirt 族泥径纹理（旧缓存回退 detail/草地池，行为不变）
+        + 2lanedirt overlay 叠加（tile 坐标确定性选帧）；overlay 整体缺失时回退程序化
+        路色 + 虚线（与现状逐像素一致）。"""
+        base = assets.scaled_ground_tile("dirt", seed, TILE_SIZE_PX)
+        if base is None:
+            base = assets.scaled_ground_tile("grass", seed, TILE_SIZE_PX)
         if base is not None:
             surface.blit(base, rect.topleft)
         else:
