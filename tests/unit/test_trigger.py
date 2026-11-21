@@ -7,6 +7,8 @@ import pytest
 from pymc2.domain.entities.mech import Faction, Mech
 from pymc2.domain.entities.mech_chassis import MechLocation
 from pymc2.domain.entities.pilot import Pilot
+from pymc2.domain.entities.turret import Turret
+from pymc2.domain.entities.vehicle import Vehicle
 from pymc2.domain.scripting.mission_script import ScriptContext
 from pymc2.domain.scripting.trigger import (
     TriggerAction,
@@ -244,3 +246,71 @@ def test_wounded_pilot_gunnery_rank_unaffected_by_condition_eval() -> None:
     ):
         evaluate_condition(TriggerCondition(kind, params), battle, 1)
     assert (mech.hull, mech.pilot.gunnery_rank) == before
+
+
+class TestSpawnUnitKinds:
+    """P2 单位谱系：spawn_reinforcement 条目 kind 三态分派（缺省 mech 容错）。"""
+
+    def test_vehicle_kind_spawns_vehicle(self) -> None:
+        battle = _battle()
+        context = ScriptContext(battle=battle)
+        apply_action(
+            TriggerAction(
+                "spawn_reinforcement",
+                {
+                    "faction": "enemy",
+                    "mechs": [{"id": "ev-01", "kind": "vehicle", "tile": [26, 12], "hull": 80, "damage": 12}],
+                },
+            ),
+            context,
+        )
+        unit = battle.get("ev-01")
+        assert isinstance(unit, Vehicle)
+        assert unit.max_hull == 80 and unit.weapon.damage == 12
+        assert unit.weapon.heat_per_shot == 0.0  # 无热量反应堆
+        assert unit.mobile is True and unit.alive is True
+
+    def test_turret_kind_spawns_immobile_turret(self) -> None:
+        battle = _battle()
+        context = ScriptContext(battle=battle)
+        apply_action(
+            TriggerAction(
+                "spawn_reinforcement",
+                {
+                    "faction": "enemy",
+                    "mechs": [{"id": "et-01", "kind": "turret", "tile": [28, 8], "hull": 60, "range_px": 420.0}],
+                },
+            ),
+            context,
+        )
+        unit = battle.get("et-01")
+        assert isinstance(unit, Turret)
+        assert unit.max_hull == 60
+        assert unit.weapon.range_px == 420.0
+        assert unit.mobile is False
+
+    def test_missing_kind_defaults_to_mech(self) -> None:
+        """缺省容错：无 kind 条目与存量行为一致（Mech）。"""
+        battle = _battle()
+        context = ScriptContext(battle=battle)
+        apply_action(
+            TriggerAction(
+                "spawn_reinforcement",
+                {"faction": "enemy", "mechs": [{"id": "ex-r1", "tile": [24, 10], "pilot_name": "vet"}]},
+            ),
+            context,
+        )
+        unit = battle.get("ex-r1")
+        assert isinstance(unit, Mech)
+        assert unit.pilot is not None and unit.pilot.name == "vet"
+
+    def test_unknown_kind_raises(self) -> None:
+        context = ScriptContext(battle=_battle())
+        with pytest.raises(ValueError, match="unknown unit kind"):
+            apply_action(
+                TriggerAction(
+                    "spawn_reinforcement",
+                    {"faction": "enemy", "mechs": [{"id": "e-inf", "kind": "infantry", "tile": [10, 10]}]},
+                ),
+                context,
+            )

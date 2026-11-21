@@ -104,6 +104,15 @@ ENVIRONMENT_VARIANT_SUFFIXES = ("_x", "_dam")
 # 未命中回退基名候选链（渲染输出与现状一致）。
 MECH_DAMAGED_VARIANT_WORDS = ("dam", "x")
 
+# P2 单位谱系（docs/P2_DESIGN_20261121.md §5）：kind → MC2 精灵 stem（小写）。
+# vehicle 实测命中 Data/TGL/128/Storm.tga（TankG.fit ObjectTypeNum=3、
+# AppearanceName='storm'，受损变体 StormDam 同名派生）；turret 指向官方作战炮塔
+# 外观名（仅 .ase 动画外观、无静态 TGA → 恒未命中 → 程序化回退，P4 .ase 接入后自然命中）。
+UNIT_SPRITE_NAMES: dict[str, str] = {
+    "vehicle": "storm",
+    "turret": "mediumautocannonturret",
+}
+
 # Wave V3 UI 面板：buttonlayout1280.fit（相对 Data/ 的布局定义路径）与解析参数。
 # 官方布局设计画布 1024×768（[HiresOffsets] 在 1280 宽屏下 x+128 居中、底边锚定）。
 BUTTON_LAYOUT_FIT_RELPATH = Path("Art/buttonlayout1280.fit")
@@ -322,6 +331,8 @@ class MC2AssetPack:
         )  # pack 统计：成功索引的 TGA 数量
         self._resolve_cache: dict[tuple[str, bool], pygame.Surface | None] = {}
         self._scaled_cache: dict[tuple[str, bool, int], pygame.Surface | None] = {}
+        self._unit_resolve_cache: dict[tuple[str, bool], pygame.Surface | None] = {}
+        self._unit_scaled_cache: dict[tuple[str, bool, int], pygame.Surface | None] = {}
         self._ground_pools: dict[str, tuple[pygame.Surface, ...]] = {}
         self._ground_scaled_cache: dict[tuple[str, int, int], pygame.Surface | None] = {}
         self._env_resolve_cache: dict[str, pygame.Surface | None] = {}
@@ -407,6 +418,38 @@ class MC2AssetPack:
         if sprite is not None and sprite.get_size() != (size_px, size_px):
             scaled = pygame.transform.smoothscale(sprite, (size_px, size_px))
         self._scaled_cache[cache_key] = scaled
+        return scaled
+
+    def resolve_unit_sprite(self, kind: str, *, damaged: bool = False) -> pygame.Surface | None:
+        """载具/炮塔 kind → 精灵（P2）：UNIT_SPRITE_NAMES 映射 stem；damaged=True 派生
+        dam/x 变体（storm → stormdam 命中官方 StormDam.tga），未命中回退基名候选；
+        未知 kind 原样进匹配链 → 全未命中返回 None（渲染层程序化回退）。结果缓存。"""
+        key = kind.strip().lower()
+        if not key:
+            return None  # 空 kind：包含匹配会退化（"" 命中一切），直接回退程序化
+        cache_key = (key, damaged)
+        if cache_key in self._unit_resolve_cache:
+            return self._unit_resolve_cache[cache_key]
+        name = UNIT_SPRITE_NAMES.get(key, key)
+        candidates = (name,)
+        if damaged:
+            variants = tuple(name + word for word in MECH_DAMAGED_VARIANT_WORDS)
+            sprite = self._lookup(variants + candidates)
+        else:
+            sprite = self._lookup(candidates)
+        self._unit_resolve_cache[cache_key] = sprite
+        return sprite
+
+    def scaled_unit_sprite(self, kind: str, size_px: int, *, damaged: bool = False) -> pygame.Surface | None:
+        """解析并缩放到目标尺寸（逐 (kind, damaged, size) 缓存，避免逐帧 smoothscale）。"""
+        cache_key = (kind.strip().lower(), damaged, size_px)
+        if cache_key in self._unit_scaled_cache:
+            return self._unit_scaled_cache[cache_key]
+        sprite = self.resolve_unit_sprite(kind, damaged=damaged)
+        scaled: pygame.Surface | None = sprite
+        if sprite is not None and sprite.get_size() != (size_px, size_px):
+            scaled = pygame.transform.smoothscale(sprite, (size_px, size_px))
+        self._unit_scaled_cache[cache_key] = scaled
         return scaled
 
     def _lookup(self, names: tuple[str, ...]) -> pygame.Surface | None:

@@ -31,6 +31,9 @@ MADCAT_X_COLOR = (60, 30, 25, 255)
 THOR_COLOR = (40, 200, 80, 255)
 URBANMECH_COLOR = (60, 90, 220, 255)
 AWESOME_COLOR = (200, 160, 40, 255)
+# P2 单位谱系 fixture 色板（vehicle→storm / 受损变体 stormdam）
+STORM_COLOR = (90, 110, 130, 255)
+STORM_DAM_COLOR = (60, 70, 85, 255)
 # Wave V1 fixture 色板
 DETAIL_COLORS = [(150, 100, 60, 255), (90, 120, 70, 255), (40, 80, 120, 255)]
 ROAD_FRAME_COLORS = [(140 + i, 120, 90, 255) for i in range(6)]  # 每帧异色验证帧号排序
@@ -257,6 +260,63 @@ class TestDamagedMechVariant:
         assert pack.scaled_mech_sprite("px-01", 16, damaged=True) is damaged
         base = pack.scaled_mech_sprite("px-01", 16)
         assert base is not None and base is not damaged
+
+
+class TestUnitSprite:
+    """P2 单位谱系精灵：resolve_unit_sprite（vehicle→storm / turret→.ase 外观名恒未命中）。
+
+    官方 TankG.fit AppearanceName='storm' → Data/TGL/128/Storm.tga 实测命中（受损变体
+    StormDam 同名派生）；作战炮塔官方仅 .ase 动画外观、无静态 TGA → 程序化回退。
+    """
+
+    @pytest.fixture()
+    def unit_root(self, tmp_path: Path) -> Path:
+        root = tmp_path / "mc2-units"
+        tgl = root / "Data" / "TGL" / "128"
+        write_tga(tgl / "Storm.tga", STORM_COLOR)
+        write_tga(tgl / "StormDam.tga", STORM_DAM_COLOR)
+        return root
+
+    def test_vehicle_hits_storm_stem(self, unit_root: Path) -> None:
+        pack = MC2AssetPack.load(unit_root)
+        sprite = pack.resolve_unit_sprite("vehicle")
+        assert sprite is not None
+        assert sprite.get_at((16, 16)) == STORM_COLOR
+
+    def test_vehicle_damaged_hits_dam_variant(self, unit_root: Path) -> None:
+        """damaged=True 派生 storm+dam → 命中官方 StormDam.tga（载具受损变体）。"""
+        pack = MC2AssetPack.load(unit_root)
+        sprite = pack.resolve_unit_sprite("vehicle", damaged=True)
+        assert sprite is not None
+        assert sprite.get_at((16, 16)) == STORM_DAM_COLOR
+
+    def test_vehicle_damaged_falls_back_to_base_without_variant(self, tmp_path: Path) -> None:
+        root = tmp_path / "mc2-vehicle-only"
+        write_tga(root / "Data" / "TGL" / "128" / "Storm.tga", STORM_COLOR)
+        pack = MC2AssetPack.load(root)
+        damaged = pack.resolve_unit_sprite("vehicle", damaged=True)
+        assert damaged is not None and damaged is pack.resolve_unit_sprite("vehicle")
+
+    def test_turret_stem_misses_static_index(self, unit_root: Path) -> None:
+        """官方作战炮塔无静态 TGA：turret stem 恒未命中 → None（渲染层程序化回退）。"""
+        pack = MC2AssetPack.load(unit_root)
+        assert pack.resolve_unit_sprite("turret") is None
+        assert pack.resolve_unit_sprite("turret", damaged=True) is None
+
+    def test_unknown_kind_passthrough_miss_returns_none(self, unit_root: Path) -> None:
+        pack = MC2AssetPack.load(unit_root)
+        assert pack.resolve_unit_sprite("infantry") is None
+        assert pack.resolve_unit_sprite("") is None
+
+    def test_scaled_unit_sprite_resized_and_cached(self, unit_root: Path) -> None:
+        pack = MC2AssetPack.load(unit_root)
+        scaled = pack.scaled_unit_sprite("vehicle", 16)
+        assert scaled is not None
+        assert scaled.get_size() == (16, 16)
+        assert scaled.get_at((8, 8)) == STORM_COLOR
+        assert pack.scaled_unit_sprite("vehicle", 16) is scaled
+        damaged = pack.scaled_unit_sprite("vehicle", 16, damaged=True)
+        assert damaged is not None and damaged is not scaled
 
 
 class TestDefaultPackRoot:

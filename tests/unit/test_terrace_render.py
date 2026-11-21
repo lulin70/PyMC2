@@ -154,13 +154,13 @@ class TestMechYSortAndOffset:
     def test_y_sort_elevation_weight_first(self, screen: pygame.Surface, monkeypatch: pytest.MonkeyPatch) -> None:
         """排序键 (elevation, y)：低层在前、高层后画（避免高层被低层前景遮挡错序）。"""
         order: list[str] = []
-        original = Renderer._draw_mech
+        original = Renderer._draw_unit
 
         def spy(renderer: Renderer, mech: Mech, cam_x: float, cam_y: float, *, selected: bool) -> None:
             order.append(mech.id)
             original(renderer, mech, cam_x, cam_y, selected=selected)
 
-        monkeypatch.setattr(Renderer, "_draw_mech", spy)
+        monkeypatch.setattr(Renderer, "_draw_unit", spy)
         renderer = Renderer(screen, elevation=_grid({(10, 8): 2}))
         service = BattleService(elevation=renderer._elevation)
         service.add_mech(_mech_at((6, 10), "low-y-large"))  # elev 0, y=336
@@ -174,7 +174,7 @@ class TestMechYSortAndOffset:
         def spy(renderer: Renderer, mech: Mech, cam_x: float, cam_y: float, *, selected: bool) -> None:
             order.append(mech.id)
 
-        monkeypatch.setattr(Renderer, "_draw_mech", spy)
+        monkeypatch.setattr(Renderer, "_draw_unit", spy)
         renderer = Renderer(screen, elevation=ElevationGrid.flat())
         service = BattleService()
         service.add_mech(_mech_at((6, 5), "north"))  # y=176

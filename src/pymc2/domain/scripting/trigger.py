@@ -24,6 +24,9 @@ from typing import TYPE_CHECKING, Any
 
 from pymc2.domain.entities.mech import TILE_SIZE_PX, Faction, Mech, Weapon
 from pymc2.domain.entities.pilot import Pilot
+from pymc2.domain.entities.turret import Turret
+from pymc2.domain.entities.unit import Unit
+from pymc2.domain.entities.vehicle import Vehicle
 
 if TYPE_CHECKING:
     from pymc2.domain.scripting.mission_script import ScriptContext
@@ -153,7 +156,12 @@ def apply_action(action: TriggerAction, context: ScriptContext) -> None:
 
 
 def _spawn_reinforcement(params: dict[str, Any], context: ScriptContext) -> None:
-    """空投增援：按 mechs 快照列表生成机甲入局（id 撞车显式报错）。"""
+    """空投增援：按 mechs 快照列表生成单位入局（id 撞车显式报错）。
+
+    P2 单位谱系：条目可选 kind 字段分派对象类（"mech" 缺省容错 / "vehicle" / "turret"，
+    docs/P2_DESIGN_20261121.md §4）；载具/炮塔复用 hull/damage/range_px/cooldown_s
+    参数键（pilot_name 仅 mech 消费），无热量语义由实体构造强制（heat_per_shot=0）。
+    """
     faction = Faction(str(params["faction"]))
     battle = context.battle
     for spec in params["mechs"]:
@@ -161,19 +169,53 @@ def _spawn_reinforcement(params: dict[str, Any], context: ScriptContext) -> None
         if unit_id in battle.mechs:
             raise ValueError(f"reinforcement id already exists: {unit_id!r}")
         tile_x, tile_y = (int(v) for v in spec["tile"])
-        mech = Mech(
-            unit_id,
-            faction,
-            tile_x * TILE_SIZE_PX + TILE_SIZE_PX / 2,
-            tile_y * TILE_SIZE_PX + TILE_SIZE_PX / 2,
-            hull=int(spec.get("hull", 100)),
-            weapon=Weapon(
-                "mlaser",
-                int(spec.get("damage", 15)),
-                float(spec.get("range_px", 360.0)),
-                float(spec.get("cooldown_s", 2.5)),
-            ),
-            pilot=Pilot(str(spec["pilot_name"])) if spec.get("pilot_name") is not None else None,
-        )
-        battle.add_mech(mech)
+        x = tile_x * TILE_SIZE_PX + TILE_SIZE_PX / 2
+        y = tile_y * TILE_SIZE_PX + TILE_SIZE_PX / 2
+        kind = str(spec.get("kind", "mech"))
+        if kind == "vehicle":
+            unit: Unit = Vehicle(
+                unit_id,
+                faction,
+                x,
+                y,
+                hp=int(spec.get("hull", 80)),
+                weapon=Weapon(
+                    "autocannon",
+                    int(spec.get("damage", 12)),
+                    float(spec.get("range_px", 400.0)),
+                    float(spec.get("cooldown_s", 2.0)),
+                ),
+            )
+        elif kind == "turret":
+            unit = Turret(
+                unit_id,
+                faction,
+                x,
+                y,
+                hp=int(spec.get("hull", 60)),
+                weapon=Weapon(
+                    "autocannon",
+                    int(spec.get("damage", 12)),
+                    float(spec.get("range_px", 400.0)),
+                    float(spec.get("cooldown_s", 2.0)),
+                ),
+            )
+        elif kind == "mech":
+            unit = Mech(
+                unit_id,
+                faction,
+                x,
+                y,
+                hull=int(spec.get("hull", 100)),
+                weapon=Weapon(
+                    "mlaser",
+                    int(spec.get("damage", 15)),
+                    float(spec.get("range_px", 360.0)),
+                    float(spec.get("cooldown_s", 2.5)),
+                ),
+                pilot=Pilot(str(spec["pilot_name"])) if spec.get("pilot_name") is not None else None,
+            )
+        else:
+            raise ValueError(f"reinforcement {unit_id!r}: unknown unit kind {kind!r} (known: mech/vehicle/turret)")
+        battle.add_mech(unit)
         context.spawned_unit_ids.append(unit_id)

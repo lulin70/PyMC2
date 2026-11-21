@@ -36,7 +36,10 @@ from pymc2.domain.entities.mech import (
     TILE_SIZE_PX,
     Faction,
     Mech,
+    WeaponType,
 )
+from pymc2.domain.entities.turret import Turret
+from pymc2.domain.entities.unit import Unit
 from pymc2.domain.systems.ballistic import Projectile
 from pymc2.infrastructure.mc2_assets import MC2AssetPack
 from pymc2.services.battle_service import BattleService
@@ -105,6 +108,9 @@ _SELECTION_COLOR = (250, 210, 60)
 _MOVE_MARKER_COLOR = (250, 150, 40)
 _ATTACK_MARK_COLOR = (255, 96, 64)
 _PROJECTILE_COLOR = (255, 230, 120)
+# P2 武器三分类弹丸分色（BALLISTIC 保持存量色；ENERGY 青色圆点；MISSILE 橙色方形弹体）。
+_ENERGY_PROJECTILE_COLOR = (90, 220, 255)
+_MISSILE_PROJECTILE_COLOR = (255, 150, 60)
 _LABEL_COLOR = (230, 230, 230)
 
 
@@ -402,13 +408,13 @@ class Renderer:
         # y 排序 tie-break：先按所在 tile 高程（高层后画，避免被低层前景遮挡错序），
         # 再按 y 大者后画（后绘覆盖先绘），同格/重叠时消除叠压随机感。
         # flat 网格高程恒 0 → 退化为纯 y 排序（存量次序不变）。
-        for mech in sorted(service.mechs.values(), key=lambda m: (self._tile_elevation(m.tile), m.y)):
-            self._draw_mech(mech, cam_x, cam_y, selected=mech.id in service.selected_ids)
+        for unit in sorted(service.mechs.values(), key=lambda m: (self._tile_elevation(m.tile), m.y)):
+            self._draw_unit(unit, cam_x, cam_y, selected=unit.id in service.selected_ids)
         for uid in service.selected_ids:
-            mech = service.get(uid)
-            if mech is None or mech.attack_target_id is None:
+            selected_unit = service.get(uid)
+            if selected_unit is None or selected_unit.attack_target_id is None:
                 continue
-            target = service.get(mech.attack_target_id)
+            target = service.get(selected_unit.attack_target_id)
             if target is not None and target.alive:
                 self._draw_attack_mark(target, cam_x, cam_y)
         if drag_rect is not None:
@@ -506,28 +512,36 @@ class Renderer:
             self.screen.blit(hint, (help_x, help_bottom - hint.get_height()))
 
     @staticmethod
-    def _stance_text(mech: Mech) -> str:
+    def _stance_text(unit: Unit) -> str:
         """火力姿态文本（HUD 状态行与面板 dropteam 槽位共用，含警戒后缀）。"""
-        stance = mech.fire_mode.value.upper()
-        if mech.guarding:
+        stance = unit.fire_mode.value.upper()
+        if unit.guarding:
             stance += "+GUARD"
         return stance
 
-    def _draw_mech(self, mech: Mech, cam_x: float, cam_y: float, *, selected: bool) -> None:
-        sx, sy = self.world_to_screen(mech.x, mech.y, cam_x, cam_y)
-        sy -= self._elev_offset(mech.tile)  # P1-A：随所在 tile 高程同步上移
+    def _draw_unit(self, unit: Unit, cam_x: float, cam_y: float, *, selected: bool) -> None:
+        """绘制单单位（Unit 泛化）：机甲/载具走各自精灵链，无资产时程序化几何回退。
+
+        回退几何（无资产/未命中）：机甲与载具=阵营色方块（载具以 id 标签区分），
+        炮塔=阵营色圆形基座（固定工事几何区分）；描边/选中框/血条/残骸共用存量绘制。
+        """
+        sx, sy = self.world_to_screen(unit.x, unit.y, cam_x, cam_y)
+        sy -= self._elev_offset(unit.tile)  # P1-A：随所在 tile 高程同步上移
         half = _MECH_SIZE_PX // 2
         rect = pygame.Rect(sx - half, sy - half, _MECH_SIZE_PX, _MECH_SIZE_PX)
-        sprite = self._mech_sprite(mech) if mech.alive else None
-        if mech.alive and sprite is not None:
+        sprite = self._unit_sprite(unit) if unit.alive else None
+        if unit.alive and sprite is not None:
             # MC2 资产命中：精灵按格子尺寸缩放绘制；阵营描边/选中框/血条仍程序化。
             sprite_rect = sprite.get_rect(center=(sx, sy))
             self.screen.blit(sprite, sprite_rect)
             pygame.draw.rect(self.screen, _MECH_BORDER_COLOR, sprite_rect, 2)
             if selected:
                 pygame.draw.rect(self.screen, _SELECTION_COLOR, sprite_rect.inflate(8, 8), 2)
-        elif mech.alive:
-            pygame.draw.rect(self.screen, _FACTION_COLORS[mech.faction], rect)
+        elif unit.alive:
+            if isinstance(unit, Turret):
+                pygame.draw.circle(self.screen, _FACTION_COLORS[unit.faction], (sx, sy), half)
+            else:
+                pygame.draw.rect(self.screen, _FACTION_COLORS[unit.faction], rect)
             pygame.draw.rect(self.screen, _MECH_BORDER_COLOR, rect, 2)
             if selected:
                 pygame.draw.rect(self.screen, _SELECTION_COLOR, rect.inflate(8, 8), 2)
@@ -536,19 +550,19 @@ class Renderer:
             pygame.draw.rect(self.screen, _WRECK_COLOR, rect)
             pygame.draw.line(self.screen, _MECH_BORDER_COLOR, rect.topleft, rect.bottomright, 2)
             pygame.draw.line(self.screen, _MECH_BORDER_COLOR, rect.bottomleft, rect.topright, 2)
-        self._draw_health_bar(mech, sx, sy - half - 10)
-        self._draw_label(mech.id, sx, sy - half - 26)
+        self._draw_health_bar(unit, sx, sy - half - 10)
+        self._draw_label(unit.id, sx, sy - half - 26)
 
-    def _mech_sprite(self, mech: Mech) -> pygame.Surface | None:
-        """资产包机甲精灵：按格子尺寸（TILE_SIZE_PX）缩放缓存；未注入/未命中 → None。
-
-        Wave V2：hull_ratio ≤ MECH_DAMAGED_HULL_RATIO 且存活 → 请求受损变体精灵
-        （资产包无变体时按包内回退语义返回基名精灵，输出与现状一致）。
-        """
+    def _unit_sprite(self, unit: Unit) -> pygame.Surface | None:
+        """资产包单位精灵：机甲走存量 id 链（受损变体口径不变），载具/炮塔走
+        resolve_unit_sprite（kind → stem 常量）；未注入/未命中 → None。"""
         if self._assets is None:
             return None
-        damaged = mech.alive and mech.hull_ratio <= MECH_DAMAGED_HULL_RATIO
-        return self._assets.scaled_mech_sprite(mech.id, TILE_SIZE_PX, damaged=damaged)
+        if isinstance(unit, Mech):
+            damaged = unit.alive and unit.hull_ratio <= MECH_DAMAGED_HULL_RATIO
+            return self._assets.scaled_mech_sprite(unit.id, TILE_SIZE_PX, damaged=damaged)
+        damaged = unit.alive and unit.hull_ratio <= MECH_DAMAGED_HULL_RATIO
+        return self._assets.scaled_unit_sprite(unit.sprite_kind, TILE_SIZE_PX, damaged=damaged)
 
     def _draw_decorations(self, cam_x: float, cam_y: float) -> None:
         """环境点缀（Wave V1）：非道路空 tile 的树/房精灵，画在地形之上、机甲之下。
@@ -568,11 +582,11 @@ class Renderer:
             sy -= self._elev_offset((tile_x, tile_y))  # P1-A：丘陵 tile 上的装饰同步上移
             self.screen.blit(sprite, sprite.get_rect(center=(sx, sy)))
 
-    def _draw_health_bar(self, mech: Mech, center_x: int, top: int) -> None:
+    def _draw_health_bar(self, unit: Unit, center_x: int, top: int) -> None:
         width, height = _HEALTH_BAR_WIDTH, _HEALTH_BAR_HEIGHT
         bg = pygame.Rect(center_x - width // 2, top, width, height)
         pygame.draw.rect(self.screen, (40, 16, 16), bg)
-        fill_width = int(width * mech.hull_ratio)
+        fill_width = int(width * unit.hull_ratio)
         if fill_width > 0:
             pygame.draw.rect(self.screen, (80, 200, 80), (bg.x, bg.y, fill_width, height))
 
@@ -590,7 +604,7 @@ class Renderer:
         pygame.draw.line(self.screen, _MOVE_MARKER_COLOR, rect.topleft, rect.bottomright, 2)
         pygame.draw.line(self.screen, _MOVE_MARKER_COLOR, rect.bottomleft, rect.topright, 2)
 
-    def _draw_attack_mark(self, target: Mech, cam_x: float, cam_y: float) -> None:
+    def _draw_attack_mark(self, target: Unit, cam_x: float, cam_y: float) -> None:
         """攻击目标高亮：围绕被指定目标画一圈红色外框（M1 几何风格）。"""
         sx, sy = self.world_to_screen(target.x, target.y, cam_x, cam_y)
         sy -= self._elev_offset(target.tile)  # P1-A：目标所在 tile 高程
@@ -621,7 +635,7 @@ class Renderer:
         names = ",".join(service.selected_ids) if service.selected_ids else "-"
         text = f"FIRE: {stance} | SEL: {names}{heat_text}"
         if primary is not None:
-            # P1-A：选中机甲所在 tile 高程（ASCII，收进现有状态行尾部惯例）。
+            # P1-A：选中单位所在 tile 高程（ASCII，收进现有状态行尾部惯例）。
             text += f" | ELEV: {self._tile_elevation(primary.tile)}"
             # P1-B：锁定目标视线被地形遮挡提示（flat 快路径恒通 → 永不追加，
             # 存量 flat 帧逐字节不变）。
@@ -641,6 +655,13 @@ class Renderer:
         self.screen.blit(line, (8, self.screen.get_height() - 20))
 
     def _draw_projectile(self, projectile: Projectile, cam_x: float, cam_y: float) -> None:
+        """弹丸绘制（P2 按武器三分类分形分色）：BALLISTIC 存量黄色圆点、ENERGY
+        青色圆点、MISSILE 橙色方形弹体。"""
         sx, sy = self.world_to_screen(projectile.x, projectile.y, cam_x, cam_y)
         sy -= self._elev_offset(self._tile_of_px(projectile.x, projectile.y))  # P1-A：所在 tile 高程
-        pygame.draw.circle(self.screen, _PROJECTILE_COLOR, (sx, sy), 3)
+        if projectile.wtype is WeaponType.MISSILE:
+            pygame.draw.rect(self.screen, _MISSILE_PROJECTILE_COLOR, (sx - 2, sy - 2, 4, 4))
+        elif projectile.wtype is WeaponType.ENERGY:
+            pygame.draw.circle(self.screen, _ENERGY_PROJECTILE_COLOR, (sx, sy), 3)
+        else:
+            pygame.draw.circle(self.screen, _PROJECTILE_COLOR, (sx, sy), 3)

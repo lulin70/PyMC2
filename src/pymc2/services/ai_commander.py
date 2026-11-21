@@ -10,6 +10,10 @@ MC2 参照：目标体系 GOAL_OBJECT / GOAL_REGION（objective 层）。本波�
 触发一次 evaluate → decompose → dispatch；propose(battle) 为纯决策入口
 （输出只依赖 battle 状态），供单测直接断言。回退路径（无 goal 适用时的
 默认指令工厂）与决策频率均可注入。
+
+P2 单位谱系泛化（Unit 协议）：目标选择优先级简单规则——攻击性目标（mobile，
+机甲/载具）> 炮塔（固定工事）；不可移动单位跳过 PRESERVE_FORCE 后撤与
+SECURE_REGION 移动（原地死守，fallback GUARD），攻击分派不变。
 """
 
 from __future__ import annotations
@@ -19,7 +23,8 @@ from collections.abc import Callable
 from dataclasses import dataclass
 from enum import Enum
 
-from pymc2.domain.entities.mech import MAP_SIZE_PX, TILE_SIZE_PX, Faction, Mech
+from pymc2.domain.entities.mech import MAP_SIZE_PX, TILE_SIZE_PX, Faction
+from pymc2.domain.entities.unit import Unit
 from pymc2.domain.orders.tactical_order import OrderOrigin, OrderType, TacticalOrder
 from pymc2.services.battle_service import BattleService
 from pymc2.services.order_dispatcher import OrderDispatcher
@@ -32,7 +37,7 @@ SECURE_REGION_RADIUS_PX = 96.0
 DESTROY_STANDOFF_RATIO = 0.8  # 接近目标时停在射程 80% 处（留命中余量）
 
 GoalComplete = Callable[[BattleService], bool]
-FallbackFactory = Callable[[Mech, BattleService], TacticalOrder | None]
+FallbackFactory = Callable[[Unit, BattleService], TacticalOrder | None]
 
 
 class GoalType(Enum):
@@ -52,13 +57,13 @@ class Goal:
     is_complete: GoalComplete
 
 
-def _default_fallback(mech: Mech, battle: BattleService) -> TacticalOrder:
+def _default_fallback(mech: Unit, battle: BattleService) -> TacticalOrder:
     """默认回退：无 goal 适用 → 原地警戒（GUARD）。"""
     return TacticalOrder(OrderType.GUARD, (mech.id,), OrderOrigin.COMMANDER, None, None)
 
 
 class AiCommander:
-    """阵营指挥官：goal 优先级评估 → 每机甲分解为 TacticalOrder → 经 Dispatcher 执行。"""
+    """阵营指挥官：goal 优先级评估 → 每单位分解为 TacticalOrder → 经 Dispatcher 执行。"""
 
     def __init__(
         self,
@@ -117,10 +122,10 @@ class AiCommander:
                 return goal
         return None
 
-    def _own_mechs(self, battle: BattleService) -> list[Mech]:
+    def _own_mechs(self, battle: BattleService) -> list[Unit]:
         return [m for m in battle.mechs.values() if m.faction is self.faction and m.alive]
 
-    def _alive_enemies(self, battle: BattleService) -> list[Mech]:
+    def _alive_enemies(self, battle: BattleService) -> list[Unit]:
         return [m for m in battle.mechs.values() if m.faction is not self.faction and m.alive]
 
     def _preserve_force_complete(self, battle: BattleService) -> bool:
@@ -138,18 +143,22 @@ class AiCommander:
 
     # ------------------------------------------------------------------ 每机甲分解
 
-    def _order_for_mech(self, mech: Mech, battle: BattleService) -> TacticalOrder | None:
-        """per-mech 优先级级联：后撤 > 攻击最弱 > 就位守区；全满足 → None。"""
-        if mech.hull_ratio < self.preserve_hull_ratio:
+    def _order_for_mech(self, mech: Unit, battle: BattleService) -> TacticalOrder | None:
+        """per-mech 优先级级联：后撤 > 攻击最弱 > 就位守区；全满足 → None。
+
+        P2：不可移动单位（炮塔）不后撤不占区（固定工事原地死守走 fallback GUARD），
+        攻击分派不变——MOVE 指令本就会被 move_mech 拒绝，提前分流防指令日志刷屏。
+        """
+        if mech.mobile and mech.hull_ratio < self.preserve_hull_ratio:
             return self._retreat_order(mech, battle)  # PRESERVE_FORCE
         enemies = self._alive_enemies(battle)
         if enemies:
             return self._destroy_order(mech, enemies)  # DESTROY_OBJECT
-        if not self._secure_region_complete(battle):
+        if mech.mobile and not self._secure_region_complete(battle):
             return self._secure_order(mech)  # SECURE_REGION
         return None
 
-    def _destroy_order(self, mech: Mech, enemies: list[Mech]) -> TacticalOrder:
+    def _destroy_order(self, mech: Unit, enemies: list[Unit]) -> TacticalOrder:
         """DESTROY_OBJECT：最弱优先集火；超出射程先接近（MOVE 到 standoff 点）。"""
         target = self._weakest_enemy(mech, enemies)
         distance = math.hypot(target.x - mech.x, target.y - mech.y)
@@ -169,14 +178,16 @@ class AiCommander:
             target_unit_id=None,
         )
 
-    def _weakest_enemy(self, mech: Mech, enemies: list[Mech]) -> Mech:
-        """目标选择：hull 最低优先（集火速杀 → 预期击杀最大化）；同血量取最近；再取 id 序。"""
+    def _weakest_enemy(self, mech: Unit, enemies: list[Unit]) -> Unit:
+        """目标选择（P2 简单规则）：攻击性目标（mobile，机甲/载具）> 炮塔（固定工事
+        不构成威胁）→ 同层 hull 最低优先（集火速杀 → 预期击杀最大化）→ 同血量取最近
+        → 再取 id 序。全机甲战局 mobile 恒 True，排序与存量口径一致。"""
         return min(
             enemies,
-            key=lambda e: (e.hull, math.hypot(e.x - mech.x, e.y - mech.y), e.id),
+            key=lambda e: (not e.mobile, e.hull, math.hypot(e.x - mech.x, e.y - mech.y), e.id),
         )
 
-    def _retreat_order(self, mech: Mech, battle: BattleService) -> TacticalOrder:
+    def _retreat_order(self, mech: Unit, battle: BattleService) -> TacticalOrder:
         """PRESERVE_FORCE：向远离最近敌人的方向后撤；无威胁则转入守区。"""
         enemy = battle.nearest_enemy(mech)
         if enemy is None:
@@ -190,7 +201,7 @@ class AiCommander:
             target_unit_id=None,
         )
 
-    def _retreat_point(self, mech: Mech, enemy: Mech) -> tuple[float, float]:
+    def _retreat_point(self, mech: Unit, enemy: Unit) -> tuple[float, float]:
         """后撤点：沿远离向量 RETREAT_DISTANCE_PX；地图边缘钳制后若不再更远，
         改撤向离敌最远的地图角（保证后撤不反向缩短敌我距离）。"""
         dx, dy = mech.x - enemy.x, mech.y - enemy.y
@@ -206,7 +217,7 @@ class AiCommander:
             px, py = max(corners, key=lambda c: math.hypot(c[0] - enemy.x, c[1] - enemy.y))
         return (px, py)
 
-    def _secure_order(self, mech: Mech) -> TacticalOrder:
+    def _secure_order(self, mech: Unit) -> TacticalOrder:
         """SECURE_REGION：向地图中央区域中心移动。"""
         cx, cy = SECURE_REGION_CENTER_PX
         return TacticalOrder(
@@ -219,7 +230,7 @@ class AiCommander:
 
     # ------------------------------------------------------------------ 几何工具
 
-    def _approach_tile(self, mech: Mech, target: Mech) -> tuple[int, int]:
+    def _approach_tile(self, mech: Unit, target: Unit) -> tuple[int, int]:
         """接近点：目标沿趋近方向 standoff 距离处（clamp 到地图内）。"""
         standoff = mech.weapon.range_px * DESTROY_STANDOFF_RATIO
         dx, dy = mech.x - target.x, mech.y - target.y

@@ -245,3 +245,46 @@ MC2 对齐说明：MC2 原版无真闪避（弹道即时命中），战术靠站
   docs/assets/uat_p1b/。
   门禁：全量 540 passed / 0 failed（511 存量零语义改动）+ ruff format/check +
   mypy（29 文件）全绿。
+
+## 交付后注记（2026-11-21）：P2 单位谱系切片（载具/炮塔实体 + 武器三分类）
+
+- **设计文档**：[P2_DESIGN_20261121.md](docs/P2_DESIGN_20261121.md)（ObjectTypeNum
+  实测/接口选型/武器剖面/偏离裁剪/实现记录全留痕）。P1 高程/视线语义零改动。
+- **远端探测结论**（videogamepreservation/mechcommander2 Trees API + mechasource
+  源码交叉验证）：`.fit` ObjectTypeNum 实测 mech=2（thor.fit）/ 载具=3（TankG/
+  TankH/TankF/Harasser）/ 炮塔=21（GaussTurret/SRMTurret/LRM2Turret 等），
+  与 dobjclass.h `BATTLEMECH=2 / GROUNDVEHICLE=3` 吻合（炮塔 21 为类型主表编号，
+  非 ObjectClass 枚举 TURRET=30）；官方作战炮塔**仅 .ase 动画外观、无静态 TGA**。
+  下载范围（仅本机缓存 ~/.pymc2/mc2-assets，零入库）：TGL/128/Storm.tga（PIL 验证
+  128×128）+ Storm/MediumAutoCannonTurret 两份 .fit 参考。
+- **Unit 协议泛化**（选型：鸭子类型 Protocol，不做继承重构）：domain/entities/unit.py
+  定义 `Unit`（mypy structural 校验 Mech/Vehicle/Turret 三方一致）；battle_service
+  `mechs` dict 泛化 `dict[str, Unit]`（字段名保留）、_predicted_move_pos 改读协议
+  move_speed_px_s/mobility_penalty（Mech 数值恒等）、move_mech 增 mobile 门槛；
+  AiCommander `_weakest_enemy` 排序键 `(not mobile, hull, dist, id)`（攻击性目标 >
+  炮塔），炮塔跳过后撤/占区走 fallback GUARD；salvage 按 Unit 折算；carryover
+  `isinstance(Mech)` 门槛（名册整备闭环保持 Mech-only）。
+- **载具/炮塔实体**：Vehicle（整体 HP apply_damage 忽略 location、无热量反应堆——
+  构造强制 `heat_per_shot=0` 走存量加热路径不设分支、可移动 120px/s、缺省 hp 80）；
+  Turret(Vehicle) 覆写 mobile=False/move_to no-op/固守原地（守卫开火零新增代码——
+  FREE 姿态 + 泛化 _auto_engage 天然覆盖），缺省 hp 60。
+- **武器三分类**（Weapon.wtype 缺省 BALLISTIC 存量零回归）：BALLISTIC ×1.5 直射快弹
+  （部位权重判定）；ENERGY ×1.0 恒 CT 直击（无视部位加成）；MISSILE ×0.7 起步 +
+  240px/s² 末端加速、3 发小伤齐射均摊余数记首发、弹着点 ±12 散布（伤害源
+  result.damage——未命中全零伤与单发口径一致）。弹丸渲染分型：BALLISTIC 存量黄点 /
+  ENERGY 青圆 / MISSILE 橙方。
+- **任务脚本 m2b**：data/missions/m2b_unit_lineage.json——spawn_reinforcement 条目
+  kind 三态（缺省 mech 容错、未知 kind 显式报错），tick 30 空投载具+炮塔，victory/
+  salvage/RP 全链路；战役链 MISSION_CHAIN 编制不动（存量测试锁定 [1,2,3] 编制）。
+- **资产接线**：resolve_unit_sprite/scaled_unit_sprite（vehicle→storm 实测命中
+  Storm.tga、damaged 复用 dam/x 变体词命中 StormDam；turret stem 指向 .ase 外观名
+  恒未命中 → 程序化回退，P4 .ase 波次补官方外观）；渲染 _draw_mech → _draw_unit
+  （炮塔圆形基座几何回退，两处存量测试 spy 机械改名断言不变）。
+- 验收：单测 37 例（vehicle 11 + turret 7 + weapon_types 9 + unit sprite 6 + spawn
+  kind 4）+ 集成 14 例（载具机甲互算双向口径/炮塔守卫射程内自动开火+射程外沉默+
+  HOLD 纪律+移动拒绝/AI 打炮塔优先级与全机甲排序不变/载具炮塔 salvage 0 RP 对照
+  机甲残骸 >0/精灵 blit）+ e2e 2 条（m2b 脚本实战：空投 → 载具推进 → 炮塔守卫开火 →
+  全歼 victory → salvage 口径；无资产程序化回退像素断言），截图 5 张存
+  docs/assets/uat_p2/。
+  门禁：全量 593 passed / 0 failed（540 存量零语义改动 + 53 新增）+ ruff
+  format/check + mypy（32 文件）全绿。

@@ -68,13 +68,17 @@ class RefitService:
 
     @staticmethod
     def carryover_survivors(state: CampaignState, battle: BattleService) -> list[str]:
-        """结算携带：存活参战机甲状态回写名册（阵亡移除）；返回幸存 id（参战序）。"""
+        """结算携带：存活参战机甲状态回写名册（阵亡移除）；返回幸存 id（参战序）。
+
+        P2：isinstance 门槛——名册/整备闭环保持 Mech-only（载具/炮塔为战局内资产，
+        序列化与 repair 均按底盘模板，不跨关携带；存量战局全 mech，恒 True 零改动）。
+        """
         survivors: list[str] = []
         carried: list[Mech] = []
         for mech in battle.mechs.values():
             if mech.faction is not Faction.PLAYER:
                 continue
-            if mech.alive:
+            if isinstance(mech, Mech) and mech.alive:
                 carried.append(mech_from_dict(mech_to_dict(mech)))
                 survivors.append(mech.id)
         state.roster = carried

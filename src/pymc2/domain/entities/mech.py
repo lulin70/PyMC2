@@ -41,12 +41,25 @@ class FireMode(Enum):
     HOLD = "hold"
 
 
+class WeaponType(Enum):
+    """武器三分类（P2，MC2 武器体系简化）：弹速/伤害剖面差异见 ballistic 模块常量表。
+
+    BALLISTIC 直射快弹（部位权重判定）；ENERGY 恒 CT 直击（无视部位加成）；
+    MISSILE 三发小伤齐射 + 末端加速。缺省 BALLISTIC = 存量武器语义不变。
+    """
+
+    BALLISTIC = "ballistic"
+    ENERGY = "energy"
+    MISSILE = "missile"
+
+
 @dataclass
 class Weapon:
     """直射武器：伤害固定，命中判定在 ballistic 系统完成。
 
     mounted_location 为挂载部位（躯干/手臂）：部位摧毁则该武器失效。
     heat_per_shot 为每次开火产热（M3 热量系统）。
+    wtype 为武器三分类（P2）：缺省 BALLISTIC 保持存量语义。
     """
 
     name: str
@@ -56,6 +69,7 @@ class Weapon:
     cd_remaining: float = 0.0
     mounted_location: MechLocation = MechLocation.CT
     heat_per_shot: float = 5.0
+    wtype: WeaponType = WeaponType.BALLISTIC
 
     def tick(self, dt: float) -> None:
         """推进冷却计时，不低于 0。"""
@@ -129,6 +143,28 @@ class Mech:
     def weapon_operational(self) -> bool:
         """武器可用：挂载部位未摧毁（LA/RA 摧毁 → 该臂武器失效）。"""
         return not self.chassis.is_destroyed(self.weapon.mounted_location)
+
+    # ------------------------------------------------------------------ Unit 协议增量（P2，纯加法）
+
+    @property
+    def mobility_penalty(self) -> float:
+        """机动惩罚（Unit 协议）：LL/RL/侧躯损毁折算，委托底盘。"""
+        return self.chassis.mobility_penalty
+
+    @property
+    def move_speed_px_s(self) -> float:
+        """基础移速（Unit 协议）：机甲恒为模块常量（预测数学读协议字段，数值不变）。"""
+        return MOVE_SPEED_PX_S
+
+    @property
+    def mobile(self) -> bool:
+        """机甲可移动（Unit 协议）：move_mech 门槛恒放行（存量语义不变）。"""
+        return True
+
+    @property
+    def sprite_kind(self) -> str:
+        """精灵分派键（Unit 协议）：机甲沿用 id → CHASSIS_SPRITE_NAMES 存量链。"""
+        return self.id
 
     def move_to(self, x: float, y: float) -> None:
         """下达移动指令（下个 tick 起以固定速度直线移动）。"""

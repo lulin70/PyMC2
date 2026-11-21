@@ -1,0 +1,58 @@
+{
+  "script_id": "m2b_unit_lineage",
+  "triggers": [
+    {
+      "id": "intro_briefing",
+      "condition": {"kind": "tick_reached", "params": {"tick": 1}},
+      "actions": [
+        {"kind": "show_message", "params": {"text": "任务开始：山脊哨站——清除敌方守卫载具与自动炮塔。"}}
+      ]
+    },
+    {
+      "id": "enemy_column",
+      "condition": {"kind": "tick_reached", "params": {"tick": 30}},
+      "actions": [
+        {
+          "kind": "spawn_reinforcement",
+          "params": {
+            "faction": "enemy",
+            "mechs": [
+              {"id": "ev-01", "kind": "vehicle", "tile": [26, 12], "hull": 80, "damage": 12, "range_px": 320.0, "cooldown_s": 2.0},
+              {"id": "et-01", "kind": "turret", "tile": [28, 8], "hull": 60, "damage": 12, "range_px": 420.0, "cooldown_s": 2.5}
+            ]
+          }
+        },
+        {"kind": "show_message", "params": {"text": "侦测到敌方载具（ObjectTypeNum 3）与自动炮塔（ObjectTypeNum 21）！"}}
+      ]
+    },
+    {
+      "id": "first_blood",
+      "condition": {"kind": "enemy_destroyed", "params": {"count": 1}},
+      "actions": [
+        {"kind": "grant_rp", "params": {"amount": 15}},
+        {"kind": "show_message", "params": {"text": "首杀入账：残骸折算 15 RP。"}}
+      ]
+    },
+    {
+      "id": "player_warning",
+      "condition": {"kind": "unit_below_hull", "params": {"unit_id": "px-01", "ratio": 0.4}},
+      "actions": [
+        {"kind": "show_message", "params": {"text": "警告：px-01 完好率不足 40%。"}}
+      ]
+    },
+    {
+      "id": "mission_victory",
+      "condition": {"kind": "enemy_destroyed", "params": {}},
+      "actions": [
+        {"kind": "victory"}
+      ]
+    },
+    {
+      "id": "mission_defeat",
+      "condition": {"kind": "allies_destroyed", "params": {}},
+      "actions": [
+        {"kind": "defeat"}
+      ]
+    }
+  ]
+}

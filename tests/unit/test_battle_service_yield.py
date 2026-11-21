@@ -270,7 +270,7 @@ class TestRendererYSort:
             def record(mech: Mech, cam_x: float, cam_y: float, *, selected: bool) -> None:
                 drawn.append(mech.id)
 
-            renderer._draw_mech = record
+            renderer._draw_unit = record
             renderer.render(service, 0.0, 0.0)
 
             assert drawn == ["low", "mid", "high"]  # y 升序：y 大者后画

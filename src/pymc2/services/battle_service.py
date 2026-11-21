@@ -24,6 +24,14 @@ _auto_engage 下发条件三处联动 has_line_of_sight——视线被挡不击�
 仅抑制击发，冷却照常走（被挡 tick 未击发不写 cd_remaining，计时照常推进）；
 显式 ATTACK_OBJECT 被挡按指令失败惯例（入 order_log、dispatch False、锁不落）。
 flat 快路径恒通 → 存量零语义改动。见 docs/P1B_DESIGN_20261121.md §2。
+
+P2 单位谱系：字段名 mechs 的 dict 泛化为 dict[str, Unit]（Unit 协议鸭子类型，
+docs/P2_DESIGN_20261121.md §4）——Vehicle（整体 HP/无热量/可移动）与 Turret
+（整体 HP/不可移动）与 Mech 同池；move_mech 增 mobile 门槛（炮塔移动指令拒绝，
+机甲恒 True 零差异）；fire_at 弹丸构造按武器三分类（build_projectiles，BALLISTIC
+缺省路径逐字节一致）；_predicted_move_pos 改读协议 move_speed_px_s/mobility_penalty
+（Mech 数值恒等，预测数学与实体推进同式不漂移）。_auto_engage/LOS/让路/salvage
+逻辑零改动（协议成员已覆盖）。
 """
 
 from __future__ import annotations
@@ -34,14 +42,16 @@ from collections.abc import Callable
 from typing import TYPE_CHECKING, NamedTuple
 
 from pymc2.domain.elevation import CLIMB_COST_PER_LEVEL, CLIMB_MAX_DELTA, ElevationGrid
-from pymc2.domain.entities.mech import MOVE_SPEED_PX_S, TILE_SIZE_PX, Faction, FireMode, Mech, Weapon
+from pymc2.domain.entities.mech import TILE_SIZE_PX, Faction, FireMode, Mech, Weapon
 from pymc2.domain.entities.mech_chassis import MechLocation, make_medium_chassis
 from pymc2.domain.entities.pilot import Pilot
+from pymc2.domain.entities.unit import Unit
 from pymc2.domain.orders.tactical_order import OrderOrigin, OrderType, TacticalOrder
 from pymc2.domain.systems.ballistic import (
     DEFAULT_PROJECTILE_SPEED_PX_S,
     Projectile,
     ShotRng,
+    build_projectiles,
     resolve_shot,
 )
 
@@ -59,18 +69,18 @@ def _tile_of(x: float, y: float) -> tuple[int, int]:
     return (int(x) // TILE_SIZE_PX, int(y) // TILE_SIZE_PX)
 
 
-def _predicted_move_pos(mech: Mech, target: tuple[float, float], speed_scale: float, dt: float) -> tuple[float, float]:
-    """本帧推进后的预测位置（不落位）：与 Mech._advance_move 同式（MOVE_SPEED_PX_S ×
-    机动惩罚 × 高程加成 × dt，dist ≤ step 吸附目标）——改动移动物理必须同步此处，
-    否则让路判定相位漂移。"""
+def _predicted_move_pos(unit: Unit, target: tuple[float, float], speed_scale: float, dt: float) -> tuple[float, float]:
+    """本帧推进后的预测位置（不落位）：与 Mech._advance_move / Vehicle.tick 同式
+    （unit.move_speed_px_s × 机动惩罚 × 高程加成 × dt，dist ≤ step 吸附目标）——
+    改动移动物理必须同步实体推进，否则让路判定相位漂移。"""
     tx, ty = target
-    dx = tx - mech.x
-    dy = ty - mech.y
+    dx = tx - unit.x
+    dy = ty - unit.y
     dist = math.hypot(dx, dy)
-    step = MOVE_SPEED_PX_S * (1.0 - mech.chassis.mobility_penalty) * speed_scale * dt
+    step = unit.move_speed_px_s * (1.0 - unit.mobility_penalty) * speed_scale * dt
     if dist <= step:
         return (tx, ty)
-    return (mech.x + dx / dist * step, mech.y + dy / dist * step)
+    return (unit.x + dx / dist * step, unit.y + dy / dist * step)
 
 
 class _MoverFrame(NamedTuple):
@@ -109,7 +119,7 @@ class BattleService:
         projectile_speed_px_s: float = DEFAULT_PROJECTILE_SPEED_PX_S,
         elevation: ElevationGrid | None = None,
     ) -> None:
-        self.mechs: dict[str, Mech] = {}
+        self.mechs: dict[str, Unit] = {}  # P2 泛化：字段名保留（存量调用零改动），值为任意 Unit
         self.projectiles: list[Projectile] = []
         self.selected_ids: list[str] = []
         self._rng: ShotRng = rng if rng is not None else random.Random()
@@ -125,10 +135,10 @@ class BattleService:
         # 让路协商（MC2-05）：mech.id → 连续被阻帧数；清零时机见 _advance_with_yield。
         self._yield_ticks: dict[str, int] = {}
 
-    def add_mech(self, mech: Mech) -> None:
+    def add_mech(self, mech: Unit) -> None:
         self.mechs[mech.id] = mech
 
-    def get(self, mech_id: str) -> Mech | None:
+    def get(self, mech_id: str) -> Unit | None:
         return self.mechs.get(mech_id)
 
     @property
@@ -137,18 +147,18 @@ class BattleService:
         return self.selected_ids[0] if self.selected_ids else None
 
     @property
-    def selected(self) -> Mech | None:
+    def selected(self) -> Unit | None:
         sid = self.selected_id
         if sid is None:
             return None
         return self.mechs.get(sid)
 
     def select_at(self, x: float, y: float) -> bool:
-        """选中点击处的己方机甲（敌方不可选，替换当前选择）。"""
-        mech = self.unit_at(x, y, faction=Faction.PLAYER)
-        if mech is None:
+        """选中点击处的己方单位（敌方不可选，替换当前选择）。"""
+        unit = self.unit_at(x, y, faction=Faction.PLAYER)
+        if unit is None:
             return False
-        self.selected_ids = [mech.id]
+        self.selected_ids = [unit.id]
         return True
 
     def select_in_rect(self, x0: float, y0: float, x1: float, y1: float) -> int:
@@ -164,19 +174,21 @@ class BattleService:
         self.selected_ids = picked
         return len(picked)
 
-    def unit_at(self, x: float, y: float, *, faction: Faction | None = None) -> Mech | None:
-        """返回命中点击处的机甲（可按阵营过滤），无命中返回 None。"""
-        for mech in self.mechs.values():
-            if faction is not None and mech.faction is not faction:
+    def unit_at(self, x: float, y: float, *, faction: Faction | None = None) -> Unit | None:
+        """返回命中点击处的单位（可按阵营过滤），无命中返回 None。"""
+        for unit in self.mechs.values():
+            if faction is not None and unit.faction is not faction:
                 continue
-            if abs(mech.x - x) <= SELECT_HALF_PX and abs(mech.y - y) <= SELECT_HALF_PX:
-                return mech
+            if abs(unit.x - x) <= SELECT_HALF_PX and abs(unit.y - y) <= SELECT_HALF_PX:
+                return unit
         return None
 
     def move_mech(self, mech_id: str, x: float, y: float) -> bool:
-        """下达移动指令（移动即解除警戒姿态；强制关机或爬升超限被拒）。"""
+        """下达移动指令（移动即解除警戒姿态；不可移动单位/强制关机/爬升超限被拒）。"""
         mech = self.mechs.get(mech_id)
         if mech is None or not mech.alive:
+            return False
+        if not mech.mobile:  # P2：炮塔等固定工事不可移动（指令入日志、dispatch False 失败惯例）
             return False
         if mech.heat.shutdown_active:
             return False
@@ -186,7 +198,7 @@ class BattleService:
         mech.move_to(x, y)
         return True
 
-    def _climb_permitted(self, mech: Mech, target_px: tuple[float, float]) -> bool:
+    def _climb_permitted(self, mech: Unit, target_px: tuple[float, float]) -> bool:
         """P1-A 爬升限制（无寻路简化）：目标 tile 高于当前 tile 超过 CLIMB_MAX_DELTA
         → 该段移动不可达，直接拒绝（回执沿用 dispatcher 失败惯例）。flat 恒放行。"""
         grid = self.elevation
@@ -195,7 +207,7 @@ class BattleService:
         delta = grid.elevation_at(_tile_of(*target_px)) - grid.elevation_at(mech.tile)
         return delta <= CLIMB_MAX_DELTA
 
-    def _climb_multiplier(self, mech: Mech, target: tuple[float, float], dt: float) -> float:
+    def _climb_multiplier(self, mech: Unit, target: tuple[float, float], dt: float) -> float:
         """P1-A 上坡步进耗时加成：本帧将进入 tile 高于当前 tile 时耗时 ×CLIMB_COST_PER_LEVEL^Δ
         （即步长速度取倒数 1/1.5^Δ，上坡变慢；下坡/平地 ×1.0 不加速）。
 
@@ -244,7 +256,8 @@ class BattleService:
 
         P1-B 视线复验（全路径击发咽喉）：视线被挡 → 不发射（无弹丸/无产热/不记技能/
         不写冷却——弹未出膛不消耗冷却，计时照常走）。命中部位在开火瞬间按权重随机
-        判定并随弹丸携带；开火成功即产热。
+        判定并随弹丸携带；开火成功即产热。P2：弹丸构造按武器三分类（build_projectiles
+        —— BALLISTIC 缺省路径输出与存量逐字节一致）。
         """
         attacker = self.mechs.get(attacker_id)
         target = self.mechs.get(target_id)
@@ -269,27 +282,15 @@ class BattleService:
         # M4 技能成长：开火即记账（uses 必增，命中加记 successes）。
         if attacker.pilot is not None:
             attacker.pilot.record_shot(result.hit)
-        self.projectiles.append(
-            Projectile(
-                attacker_id=attacker.id,
-                target_id=target.id,
-                x=attacker.x,
-                y=attacker.y,
-                impact_x=result.impact_x,
-                impact_y=result.impact_y,
-                damage=result.damage,
-                will_hit=result.hit,
-                location=result.location,
-                speed_px_s=self.projectile_speed_px_s,
-            )
-        )
+        # P2 武器三分类：BALLISTIC/ENERGY 单发，MISSILE 三发齐射（service 不感知剖面）。
+        self.projectiles.extend(build_projectiles(attacker, target, result, self._rng, self.projectile_speed_px_s))
         attacker.weapon.cd_remaining = attacker.weapon.cooldown_s
         attacker.heat.add_heat(attacker.weapon.heat_per_shot)
         return True
 
-    def nearest_enemy(self, mech: Mech) -> Mech | None:
-        """返回最近的存活敌方机甲（不限射程，射程校验在 fire_at 内）。"""
-        best: Mech | None = None
+    def nearest_enemy(self, mech: Unit) -> Unit | None:
+        """返回最近的存活敌方单位（不限射程，射程校验在 fire_at 内）。"""
+        best: Unit | None = None
         best_dist = float("inf")
         for other in self.mechs.values():
             if other.faction is mech.faction or not other.alive:
@@ -315,7 +316,7 @@ class BattleService:
         if self.tick_hook is not None:
             self.tick_hook(self)
 
-    def _advance_with_yield(self, mech: Mech, dt: float, snapshot: _OccupancySnapshot) -> None:
+    def _advance_with_yield(self, mech: Unit, dt: float, snapshot: _OccupancySnapshot) -> None:
         """单机推进（含让路）：被阻挡时本帧冻结移动（位置与目标保持，武器/散热照常）。
 
         让路计数（连续被阻帧数）生命周期：被阻 +1；进入新 tile / 到达目标 /
@@ -363,12 +364,12 @@ class BattleService:
             )
         return _OccupancySnapshot(static_tiles=static_tiles, movers=movers)
 
-    def _frame_next_tile(self, mech: Mech, target: tuple[float, float], dt: float) -> tuple[int, int]:
-        """预测本帧推进后所在 tile（不落位）：与 Mech._advance_move 同式并含 P1-A 高程
+    def _frame_next_tile(self, mech: Unit, target: tuple[float, float], dt: float) -> tuple[int, int]:
+        """预测本帧推进后所在 tile（不落位）：与实体推进同式并含 P1-A 高程
         加成（改动移动物理必须同步此处，否则让路判定相位漂移）。"""
         return _tile_of(*_predicted_move_pos(mech, target, self._climb_multiplier(mech, target, dt), dt))
 
-    def _movement_blocked(self, mech: Mech, snapshot: _OccupancySnapshot) -> bool:
+    def _movement_blocked(self, mech: Unit, snapshot: _OccupancySnapshot) -> bool:
         """让路判定（直线插值版）：仅在本帧将进入新 tile 的瞬间产生硬阻挡。
 
         - 超时逃生阀：连续让路 > YIELD_TIMEOUT_TICKS → 强制通行（防死锁，对应 MC2
@@ -428,7 +429,7 @@ class BattleService:
                     self,
                 )
 
-    def _engagement_target(self, mech: Mech) -> Mech | None:
+    def _engagement_target(self, mech: Unit) -> Unit | None:
         """当前交战目标：锁定仍有效则保持；失效（死亡/出射程/不存在）则清锁并重锁最近射程内敌。"""
         locked = self.mechs.get(mech.attack_target_id) if mech.attack_target_id is not None else None
         if locked is not None and locked.alive and self._in_weapon_range(mech, locked):
@@ -436,11 +437,11 @@ class BattleService:
         mech.attack_target_id = None  # 目标失效 → 清除锁定（下个评估周期自动重锁）
         return self._nearest_enemy_in_range(mech)
 
-    def _nearest_enemy_in_range(self, mech: Mech) -> Mech | None:
-        """射程内且视线通视的最近存活敌机甲（无则 None）；与 nearest_enemy 的区别
-        在于按武器射程 + P1-B 视线过滤（被挡敌机甲不作锁定候选；nearest_enemy 供
+    def _nearest_enemy_in_range(self, mech: Unit) -> Unit | None:
+        """射程内且视线通视的最近存活敌方单位（无则 None）；与 nearest_enemy 的区别
+        在于按武器射程 + P1-B 视线过滤（被挡敌不作锁定候选；nearest_enemy 供
         AI 接近语义使用，不过滤 LOS）。"""
-        best: Mech | None = None
+        best: Unit | None = None
         best_dist = float("inf")
         for other in self.mechs.values():
             if other.faction is mech.faction or not other.alive:
@@ -451,11 +452,11 @@ class BattleService:
         return best
 
     @staticmethod
-    def _in_weapon_range(attacker: Mech, target: Mech) -> bool:
+    def _in_weapon_range(attacker: Unit, target: Unit) -> bool:
         """射程判定复用 fire_at 同款口径（欧氏距离 ≤ 武器射程）。"""
         return math.hypot(target.x - attacker.x, target.y - attacker.y) <= attacker.weapon.range_px
 
-    def _has_line_of_sight(self, attacker: Mech, target: Mech) -> bool:
+    def _has_line_of_sight(self, attacker: Unit, target: Unit) -> bool:
         """P1-B 视线判定（fire_at/锁定候选/自动交战下发共用口径）：两端 tile 经
         ElevationGrid.has_line_of_sight 判挡，flat 快路径恒通（存量零改动）。"""
         return self.elevation.has_line_of_sight(attacker.tile, target.tile)
