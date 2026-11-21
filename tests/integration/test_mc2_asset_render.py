@@ -16,6 +16,7 @@ import pygame
 import pytest
 from PIL import Image
 
+from helpers.ase_fixture import STATIC_CARD_COLOR, write_arrow_ase, write_arrow_texture, write_static_card
 from pymc2.domain.entities.mech import Faction, Mech, Weapon
 from pymc2.infrastructure.mc2_assets import MC2AssetPack
 from pymc2.presentation.renderer import MECH_DAMAGED_HULL_RATIO, WINDOW_HEIGHT_PX, WINDOW_WIDTH_PX, Renderer
@@ -266,3 +267,87 @@ class TestDamagedSpriteSwitch:
         renderer = Renderer(screen)
         renderer.render(service, 0.0, 0.0)
         assert screen.get_at((300, 300))[:3] == PLAYER_COLOR
+
+
+def make_heading_pack(tmp_path: Path) -> MC2AssetPack:
+    """朝向帧 mini pack：TestMech 箭头 .ase + 配套纹理 + madcat 静态卡（真资产零入库）。"""
+    root = tmp_path / "mc2-heading"
+    write_arrow_ase(root / "Data" / "TGL" / "MadCat.ase")
+    write_arrow_texture(root / "Data" / "TGL" / "128" / "MadcatRGB.tga")
+    write_static_card(root / "Data" / "TGL" / "128" / "MadCat.tga", STATIC_CARD_COLOR)
+    pack = MC2AssetPack.load(root)
+    assert pack is not None
+    return pack
+
+
+def mech_sprite_pixels(screen: pygame.Surface, center: tuple[int, int], size: int = 32) -> list[pygame.Color]:
+    """精灵包围盒内全部像素（朝向帧/脚影断言用）。"""
+    cx, cy = center
+    half = size // 2
+    return [screen.get_at((x, y)) for x in range(cx - half, cx + half) for y in range(cy - half, cy + half)]
+
+
+class TestHeadingFrameRender:
+    """P4 朝向帧渲染链：.ase 命中按 heading 选帧 + 脚影；未命中回退静态卡。"""
+
+    def test_mech_with_ase_uses_heading_frame(self, screen: pygame.Surface, tmp_path: Path) -> None:
+        """px-01 命中 .ase 朝向帧：精灵区出现箭头纹理色（非静态卡色）。"""
+        service = make_single_mech_battle()
+        renderer = Renderer(screen, asset_pack=make_heading_pack(tmp_path))
+        renderer.render(service, 0.0, 0.0)
+        pixels = mech_sprite_pixels(screen, (300, 300))
+        arrow_hits = sum(1 for p in pixels if p.r > 150 and p.b > 150 and p.g < 120)
+        assert arrow_hits > 0  # 箭头纹理色（紫）在帧内
+        assert all(p[:3] != STATIC_CARD_COLOR[:3] for p in pixels)  # 未走静态卡
+
+    def test_heading_change_swaps_frame(self, screen: pygame.Surface, tmp_path: Path) -> None:
+        """heading 0 → 2：帧切换（朝向帧像素分布互异）。"""
+        service = make_single_mech_battle()
+        pack = make_heading_pack(tmp_path)
+        renderer = Renderer(screen, asset_pack=pack)
+        service.mechs["px-01"].heading = 0
+        renderer.render(service, 0.0, 0.0)
+        north = pygame.image.tobytes(screen, "RGB")
+        screen.fill((0, 0, 0))
+        service.mechs["px-01"].heading = 2
+        renderer.render(service, 0.0, 0.0)
+        east = pygame.image.tobytes(screen, "RGB")
+        assert north != east
+
+    def test_heading_frame_draws_shadow(self, screen: pygame.Surface, tmp_path: Path) -> None:
+        """朝向帧命中时铺半透明椭圆脚影：精灵下缘混合像素暗于纯草地且非遮罩全色。"""
+        service = make_single_mech_battle()
+        renderer = Renderer(screen, asset_pack=make_heading_pack(tmp_path))
+        renderer.render(service, 0.0, 0.0)
+        # 脚影中心 ≈ (300, 300 + 32//4) = (300, 308)：精灵内部偏下，草地上混合
+        pixel = screen.get_at((300, 308))
+        assert pixel[:3] != (58, 96, 44)  # 非纯程序化草底
+        assert pixel.a == 255
+
+    def test_static_card_path_has_no_shadow(self, screen: pygame.Surface, tmp_path: Path) -> None:
+        """静态卡路径（包内无 .ase）：无脚影——存量像素输出不变。"""
+        service = make_single_mech_battle()
+        renderer = Renderer(screen, asset_pack=make_damaged_pack(tmp_path))  # 仅静态卡
+        renderer.render(service, 0.0, 0.0)
+        pixels = mech_sprite_pixels(screen, (300, 308), 8)
+        assert all(p[:3] == MADCAT_COLOR[:3] for p in pixels)  # 精灵下方仍是静态卡色（无暗化）
+
+    def test_fallback_without_ase_keeps_static_card(self, screen: pygame.Surface, tmp_path: Path) -> None:
+        """包内无 .ase：_unit_sprite 回退静态卡（V2 口径不变），朝向帧未激活。"""
+        service = make_single_mech_battle()
+        pack = make_damaged_pack(tmp_path)
+        renderer = Renderer(screen, asset_pack=pack)
+        mech = service.mechs["px-01"]
+        sprite = renderer._unit_sprite(mech)
+        assert sprite is not None
+        assert sprite.get_at((16, 16))[:3] == MADCAT_COLOR[:3]
+        assert renderer._heading_frames_active(mech) is False
+
+    def test_damaged_variant_not_used_on_heading_path(self, screen: pygame.Surface, tmp_path: Path) -> None:
+        """ase 帧路径不接 damaged 变体（P4 §8 偏离 2）：压血后仍为朝向帧（箭头色）。"""
+        service = make_single_mech_battle()
+        service.mechs["px-01"].take_damage(60)  # hull_ratio 0.4 ≤ 0.5
+        renderer = Renderer(screen, asset_pack=make_heading_pack(tmp_path))
+        renderer.render(service, 0.0, 0.0)
+        pixels = mech_sprite_pixels(screen, (300, 300))
+        assert any(p.r > 150 and p.b > 150 and p.g < 120 for p in pixels)  # 仍箭头帧

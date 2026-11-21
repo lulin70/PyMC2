@@ -321,3 +321,39 @@ MC2 对齐说明：MC2 原版无真闪避（弹道即时命中），战术靠站
   真实 CLI 冒烟双关（tut_01 沙盒 / mc2_01 19 单位入窗）。
   门禁：全量 **635 passed / 0 failed**（593 存量零语义改动 + 42 新增）+ ruff
   format/check + mypy（35 文件）全绿。
+
+## 交付后注记（2026-11-21）：P4 画面补齐切片（.ase 解析 PoC + 机甲 8 朝向帧）
+
+- **设计文档**：[P4_DESIGN_20261121.md](docs/P4_DESIGN_20261121.md)（帧源探测证据/.ase
+  逆向笔记/光栅参数/PoC 质量结论/降级决策/实现记录全留痕）。PoC 先行验收后铺开，
+  降级路线 A/B 未启用。
+- **帧源探测结论**（Trees API 全量 17664 blob）：Data/TGL 下 **2947 个 .ase** 为外观
+  主载体；四机甲全部齐套常规运动帧源（Idle/Walk/Run/STtoWK 等过渡）+ Fall*/Hit*/X
+  损伤动画；`*.ini` 实测 FileName0/1 是近/远两级 **LOD**（L1 非损伤级），
+  ShadowName 指向 X 变体网格。动画信息在 `*CONTROL_*_TRACK` 骨骼轨迹（实测
+  MadcatWalk.ase 780 条），网格是单帧定格姿态 → 逐帧播放需骨骼重建（远期池），
+  本切片取单静态帧（任务口径足够）。
+- **.ase 解析器**（infrastructure/ase_parser.py）：3DSMAX ASCII 行式解析（括号深度
+  跟踪），提取 GEOMOBJECT 网格清单——顶点实测为世界坐标（导出已烘焙节点变换，
+  无需骨骼层级）、面/MTLID/UV/TFACE/材质 diffuse；TIMEVALUE 0（或首个）MESH 块 +
+  frame_count 统计；坏行跳过、缺头报错、助手节点不产网格。
+- **软件光栅**（infrastructure/mesh_render.py）：正交投影俯视（倾角 45°）+ 绕 z 轴
+  8 朝向（0=北顺时针 45°/步）+ 面深度排序画师算法 + 平面着色（法线双面化 × 固定
+  光照方向）；面色 = 面 UV 均值采样官方静态卡纹理单点（32px 下面均 1-3px，观感≈贴图）
+  回退材质 diffuse；4× 超采样 + 同色描边封缝 → smoothscale；程序化半透明椭圆脚影。
+  **PoC 质量闸门通过**：Madcat（195 顶点 275 面）8 帧预渲染 0.02s，轮廓/无穿面/
+  朝向可辨四项全过，32px 观感与静态卡相当且净增朝向信息。
+- **朝向接入**：Mech.heading（8 桶，heading_bucket 量化在 domain）——移动方向
+  （Mech._advance_move）> 攻击目标方向（BattleService._update_attack_headings，
+  移动优先）；renderer._unit_sprite 朝向帧优先、未命中逐 stem 回退存量静态卡
+  （damaged 口径仅静态卡路径保留）；朝向帧命中时铺脚影（静态卡路径零改动）。
+- **资产接线**：MC2AssetPack.scaled_mech_heading_sprite（lazy 扫 Data/TGL/<stem>.ase
+  大小写不敏感精确匹配，纹理 = 索引内 stem+"rgb" 静态卡）——三级缓存（8 帧原生/
+  (kind,heading,size) 缩放/负缓存），损坏 .ase 单文件跳过回退静态卡；CI/无资产
+  环境恒 None → 行为保持铁律成立。
+- 验收：单测 38 例（.ase 解析 9 + 光栅/阴影 8 + heading 量化 8 + 资产缓存 7 + 集成
+  渲染 6）+ e2e 2 条（fixture 朝向帧实战：开局锁定东向 → 南移移动优先 → 到达攻击
+  朝向重算；无 .ase 回退静态卡），截图 4 张存 docs/assets/uat_p4/ + PoC 对比图 2 张 +
+  真实 Madcat 资产 UAT 2 张（真管线像素验证）。
+  门禁：全量 **675 passed / 0 failed**（635 存量零语义改动 + 40 新增）+ ruff
+  format/check + mypy（37 文件）全绿。MC2 资产零入库（.ase 仅本机缓存）。

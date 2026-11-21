@@ -22,6 +22,7 @@ import pygame
 import pytest
 from PIL import Image
 
+from helpers.ase_fixture import write_arrow_ase, write_arrow_texture
 from pymc2.infrastructure.mc2_assets import ASSETS_ENV_VAR, MC2AssetPack, default_pack_root
 
 SIZE_PX = (32, 32)
@@ -317,6 +318,70 @@ class TestUnitSprite:
         assert pack.scaled_unit_sprite("vehicle", 16) is scaled
         damaged = pack.scaled_unit_sprite("vehicle", 16, damaged=True)
         assert damaged is not None and damaged is not scaled
+
+
+class TestMechHeadingFrames:
+    """P4 机甲 8 朝向帧：scaled_mech_heading_sprite（.ase lazy 解析 + 预渲染缓存 +
+    负缓存）——真 .ase 零入库，fixture 用 helpers.ase_fixture 合成 TestMech 文本。"""
+
+    @pytest.fixture()
+    def ase_root(self, tmp_path: Path) -> Path:
+        root = tmp_path / "mc2-ase"
+        write_arrow_ase(root / "Data" / "TGL" / "MadCat.ase")
+        write_arrow_texture(root / "Data" / "TGL" / "128" / "MadcatRGB.tga")
+        return root
+
+    def test_heading_frame_rendered_from_ase(self, ase_root: Path, pygame_context: None) -> None:
+        pack = MC2AssetPack.load(ase_root)
+        frame = pack.scaled_mech_heading_sprite("px-01", 0, 32)
+        assert frame is not None
+        assert frame.get_size() == (32, 32)
+        assert frame.get_at((16, 16)).a > 0  # 箭头网格投影过画布中心区域
+
+    def test_heading_frame_cached(self, ase_root: Path, pygame_context: None) -> None:
+        pack = MC2AssetPack.load(ase_root)
+        first = pack.scaled_mech_heading_sprite("px-01", 0, 32)
+        assert first is not None
+        assert pack.scaled_mech_heading_sprite("px-01", 0, 32) is first
+
+    def test_heading_wraps_modulo_steps(self, ase_root: Path, pygame_context: None) -> None:
+        """heading 以 HEADING_STEPS 取模（8 桶循环），越界桶安全回绕。"""
+        pack = MC2AssetPack.load(ase_root)
+        base = pack.scaled_mech_heading_sprite("px-01", 0, 32)
+        wrapped = pack.scaled_mech_heading_sprite("px-01", 8, 32)
+        assert base is not None and wrapped is not None
+        assert pygame.image.tobytes(base, "RGBA") == pygame.image.tobytes(wrapped, "RGBA")
+
+    def test_headings_differ_per_bucket(self, ase_root: Path, pygame_context: None) -> None:
+        pack = MC2AssetPack.load(ase_root)
+        north = pack.scaled_mech_heading_sprite("px-01", 0, 32)
+        east = pack.scaled_mech_heading_sprite("px-01", 2, 32)
+        assert north is not None and east is not None
+        assert pygame.image.tobytes(north, "RGBA") != pygame.image.tobytes(east, "RGBA")
+
+    def test_missing_ase_returns_none_and_negative_cached(self, pack_root: Path, pygame_context: None) -> None:
+        """无 .ase 文件 → None（渲染层回退静态卡）；负缓存防重复扫描。"""
+        pack = MC2AssetPack.load(pack_root)
+        assert pack.scaled_mech_heading_sprite("px-01", 0, 32) is None
+        assert pack.scaled_mech_heading_sprite("px-01", 3, 32) is None
+        assert pack._ase_frames["madcat"] is None  # 负缓存驻留
+
+    def test_corrupt_ase_with_static_card_falls_back(self, tmp_path: Path, pygame_context: None) -> None:
+        """损坏 .ase（缺导出头）+ 静态卡在 → 朝向帧 None（不抛出，回退链生效），静态卡照常解析。"""
+        root = tmp_path / "mc2-broken-ase-card"
+        ase_path = root / "Data" / "TGL" / "MadCat.ase"
+        ase_path.parent.mkdir(parents=True)
+        ase_path.write_text("garbage", encoding="ascii")
+        write_tga(root / "Data" / "TGL" / "128" / "MadCat.tga", MADCAT_COLOR)
+        pack = MC2AssetPack.load(root)
+        assert pack is not None
+        assert pack.scaled_mech_heading_sprite("px-01", 0, 32) is None
+        sprite = pack.resolve_mech_sprite("px-01")
+        assert sprite is not None and sprite.get_at((16, 16)) == MADCAT_COLOR
+
+    def test_empty_kind_returns_none(self, ase_root: Path, pygame_context: None) -> None:
+        pack = MC2AssetPack.load(ase_root)
+        assert pack.scaled_mech_heading_sprite("", 0, 32) is None
 
 
 class TestDefaultPackRoot:

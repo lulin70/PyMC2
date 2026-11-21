@@ -42,7 +42,7 @@ from collections.abc import Callable
 from typing import TYPE_CHECKING, NamedTuple
 
 from pymc2.domain.elevation import CLIMB_COST_PER_LEVEL, CLIMB_MAX_DELTA, ElevationGrid
-from pymc2.domain.entities.mech import TILE_SIZE_PX, Faction, FireMode, Mech, Weapon
+from pymc2.domain.entities.mech import TILE_SIZE_PX, Faction, FireMode, Mech, Weapon, heading_bucket
 from pymc2.domain.entities.mech_chassis import MechLocation, make_medium_chassis
 from pymc2.domain.entities.pilot import Pilot
 from pymc2.domain.entities.unit import Unit
@@ -306,6 +306,7 @@ class BattleService:
         for mech in self.mechs.values():
             self._advance_with_yield(mech, dt, snapshot)
         self._auto_engage()
+        self._update_attack_headings()  # P4：锁定目标后朝向目标（移动方向优先，见下）
         still_flying: list[Projectile] = []
         for projectile in self.projectiles:
             if projectile.advance(dt):
@@ -315,6 +316,23 @@ class BattleService:
         self.projectiles = still_flying
         if self.tick_hook is not None:
             self.tick_hook(self)
+
+    def _update_attack_headings(self) -> None:
+        """P4 攻击朝向：有锁定目标且无移动意图的存活机甲转向目标（MC2 原版转向开火）。
+
+        优先级：移动方向 > 攻击目标（移动朝向已由 Mech._advance_move 本帧更新，此处
+        仅补静止待击状态）；让路冻结帧 move_target 在推进后已还原 → 本方法跳过，
+        朝向保持最后移动方向。仅 Mech 接入（载具/炮塔不在 P4 范围，
+        docs/P4_DESIGN_20261121.md §8 偏离 5）。"""
+        for unit in self.mechs.values():
+            if not isinstance(unit, Mech) or not unit.alive:
+                continue
+            if unit.move_target is not None or unit.attack_target_id is None:
+                continue
+            target = self.mechs.get(unit.attack_target_id)
+            if target is None or not target.alive:
+                continue
+            unit.heading = heading_bucket(target.x - unit.x, target.y - unit.y)
 
     def _advance_with_yield(self, mech: Unit, dt: float, snapshot: _OccupancySnapshot) -> None:
         """单机推进（含让路）：被阻挡时本帧冻结移动（位置与目标保持，武器/散热照常）。

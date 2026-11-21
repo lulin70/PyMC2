@@ -26,6 +26,20 @@ MAP_TILES = 40
 MAP_SIZE_PX = MAP_TILES * TILE_SIZE_PX
 MOVE_SPEED_PX_S = 96.0
 
+# P4 朝向桶数（0=北/−y 顺时针每 45°；与 infrastructure/mesh_render.HEADING_STEPS
+# 同口径——8 桶朝向 ↔ 8 张预渲染帧，跨层引用经测试锁定而非 import）。
+HEADING_STEPS = 8
+
+
+def heading_bucket(dx: float, dy: float) -> int:
+    """世界位移向量 → 朝向桶（0=北/−y 顺时针 45°/步；零向量恒 0）。
+
+    deg = degrees(atan2(dx, −dy))（北 0、东 90）；floor((deg+22.5)/45) 归 8 桶。"""
+    if dx == 0.0 and dy == 0.0:
+        return 0
+    deg = math.degrees(math.atan2(dx, -dy))
+    return int(math.floor((deg + 22.5) / 45.0)) % HEADING_STEPS
+
 
 class Faction(Enum):
     """阵营：玩家 / 敌方。"""
@@ -113,6 +127,8 @@ class Mech:
         self.fire_mode = FireMode.FREE
         self.guarding = False
         self.attack_target_id: str | None = None
+        # P4 朝向桶（0=北顺时针 45°/步）：移动方向/攻击目标方向决定，渲染层据此选帧。
+        self.heading: int = 0
 
     @property
     def position(self) -> tuple[float, float]:
@@ -189,6 +205,7 @@ class Mech:
         dx = tx - self.x
         dy = ty - self.y
         dist = math.hypot(dx, dy)
+        self.heading = heading_bucket(dx, dy)  # P4：移动方向决定朝向（含到达吸附帧）
         step = MOVE_SPEED_PX_S * (1.0 - self.chassis.mobility_penalty) * speed_scale * dt
         if dist <= step:
             self.x, self.y = tx, ty

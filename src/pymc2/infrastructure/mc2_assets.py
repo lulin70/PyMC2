@@ -51,6 +51,9 @@ from pathlib import Path
 import pygame
 from PIL import Image
 
+from pymc2.infrastructure.ase_parser import AseParseError, parse_ase
+from pymc2.infrastructure.mesh_render import HEADING_STEPS, render_heading_frames
+
 # 扫描目录（相对 Data/）：256 精灵优先于 128（同 stem 保留先命中者），Art 立绘兜底；
 # Textures/64 地面基础纹理 + Textures/64Overlays 道路覆盖序列（Wave V1 地形合成）。
 SPRITE_DIR_256 = Path("TGL/256")
@@ -112,6 +115,14 @@ UNIT_SPRITE_NAMES: dict[str, str] = {
     "vehicle": "storm",
     "turret": "mediumautocannonturret",
 }
+
+# P4 机甲 8 朝向帧：Data/TGL/<Stem>.ase（3DSMAX ASCII 场景，文件名与 AppearanceName/
+# 精灵 stem 同名）经 mesh_render 预渲染 8 朝向（0=北顺时针 45°/步）。纹理取索引内
+# ``stem+"rgb"`` 静态卡（如 MadcatRGB.tga）按面 UV 采样着色；帧原生画布 128px
+# （对齐官方卡分辨率），渲染层按格子尺寸 smoothscale。
+ASE_DIR = Path("TGL")
+ASE_FRAME_CANVAS_PX = 128
+MECH_ASE_TEXTURE_SUFFIX = "rgb"
 
 # Wave V3 UI 面板：buttonlayout1280.fit（相对 Data/ 的布局定义路径）与解析参数。
 # 官方布局设计画布 1024×768（[HiresOffsets] 在 1280 宽屏下 x+128 居中、底边锚定）。
@@ -333,6 +344,9 @@ class MC2AssetPack:
         self._scaled_cache: dict[tuple[str, bool, int], pygame.Surface | None] = {}
         self._unit_resolve_cache: dict[tuple[str, bool], pygame.Surface | None] = {}
         self._unit_scaled_cache: dict[tuple[str, bool, int], pygame.Surface | None] = {}
+        # P4 机甲朝向帧：stem → 8 帧原生 Surface（None=负缓存）/ (kind, heading, size) → 缩放帧。
+        self._ase_frames: dict[str, tuple[pygame.Surface, ...] | None] = {}
+        self._ase_scaled: dict[tuple[str, int, int], pygame.Surface | None] = {}
         self._ground_pools: dict[str, tuple[pygame.Surface, ...]] = {}
         self._ground_scaled_cache: dict[tuple[str, int, int], pygame.Surface | None] = {}
         self._env_resolve_cache: dict[str, pygame.Surface | None] = {}
@@ -451,6 +465,63 @@ class MC2AssetPack:
             scaled = pygame.transform.smoothscale(sprite, (size_px, size_px))
         self._unit_scaled_cache[cache_key] = scaled
         return scaled
+
+    def scaled_mech_heading_sprite(self, chassis_kind: str, heading: int, size_px: int) -> pygame.Surface | None:
+        """机甲 kind + 朝向桶 → 预渲染朝向帧（P4）：候选 stem（同静态卡映射链）命中
+        ``Data/TGL/<stem>.ase`` 时返回该朝向帧的缩放 Surface；未命中（无 .ase 文件 /
+        解析失败 / 无网格）→ None（渲染层回退存量静态卡路径，输出不变）。
+
+        缓存三级：``_ase_frames``（stem → 8 帧原生，None 负缓存防重复扫描）、
+        ``_ase_scaled``（(kind, heading, size) → 帧结果）。lazy 构建（首次调用才扫
+        Data/TGL），无资产环境恒 None。"""
+        key = chassis_kind.strip().lower()
+        if not key:
+            return None
+        cache_key = (key, heading, size_px)
+        if cache_key in self._ase_scaled:
+            return self._ase_scaled[cache_key]
+        frame: pygame.Surface | None = None
+        for name in _sprite_name_candidates(key):
+            frames = self._ase_frame_set(name)
+            if frames:
+                frame = frames[heading % HEADING_STEPS]
+                if frame.get_size() != (size_px, size_px):
+                    frame = pygame.transform.smoothscale(frame, (size_px, size_px))
+                break
+        self._ase_scaled[cache_key] = frame
+        return frame
+
+    def _ase_frame_set(self, stem: str) -> tuple[pygame.Surface, ...] | None:
+        """stem → 8 朝向原生帧（lazy 解析 + 预渲染，结果/负缓存均驻留）。"""
+        cached = self._ase_frames.get(stem)
+        if cached is not None:
+            return cached
+        if stem in self._ase_frames:
+            return None  # 已负缓存（无 .ase / 解析失败）
+        frames: tuple[pygame.Surface, ...] | None = None
+        ase_path = self._find_ase(stem)
+        if ase_path is not None:
+            try:
+                scene = parse_ase(ase_path)
+                frames = render_heading_frames(
+                    scene, self._sprites.get(stem + MECH_ASE_TEXTURE_SUFFIX), ASE_FRAME_CANVAS_PX
+                )
+            except (AseParseError, OSError, ValueError):  # 单文件损坏跳过 → 回退静态卡
+                frames = None
+            if frames is not None and len(frames) != HEADING_STEPS:
+                frames = None  # 帧数不足按未命中处理（朝向选帧需全量 8 帧）
+        self._ase_frames[stem] = frames
+        return frames
+
+    def _find_ase(self, stem: str) -> Path | None:
+        """Data/TGL 下按 stem 大小写不敏感精确匹配 ``<stem>.ase``（无则 None）。"""
+        directory = self.root / "Data" / ASE_DIR
+        if not directory.is_dir():
+            return None
+        for path in sorted(directory.iterdir()):
+            if path.is_file() and path.suffix.lower() == ".ase" and path.stem.lower() == stem:
+                return path
+        return None
 
     def _lookup(self, names: tuple[str, ...]) -> pygame.Surface | None:
         """按候选名匹配索引：先精确，再包含（最短 stem 优先，结果确定）。"""

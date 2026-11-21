@@ -42,6 +42,7 @@ from pymc2.domain.entities.turret import Turret
 from pymc2.domain.entities.unit import Unit
 from pymc2.domain.systems.ballistic import Projectile
 from pymc2.infrastructure.mc2_assets import MC2AssetPack
+from pymc2.infrastructure.mesh_render import mech_shadow_surface
 from pymc2.services.battle_service import BattleService
 
 WINDOW_WIDTH_PX = 1280
@@ -524,13 +525,18 @@ class Renderer:
 
         回退几何（无资产/未命中）：机甲与载具=阵营色方块（载具以 id 标签区分），
         炮塔=阵营色圆形基座（固定工事几何区分）；描边/选中框/血条/残骸共用存量绘制。
-        """
+        P4：机甲命中 .ase 朝向帧时（_unit_sprite 朝向分支）先铺程序化半透明椭圆脚影
+        （mesh_render.mech_shadow_surface，与选中框/血条程序化风格一致）；静态卡路径
+        不加脚影——存量像素输出不变。"""
         sx, sy = self.world_to_screen(unit.x, unit.y, cam_x, cam_y)
         sy -= self._elev_offset(unit.tile)  # P1-A：随所在 tile 高程同步上移
         half = _MECH_SIZE_PX // 2
         rect = pygame.Rect(sx - half, sy - half, _MECH_SIZE_PX, _MECH_SIZE_PX)
         sprite = self._unit_sprite(unit) if unit.alive else None
         if unit.alive and sprite is not None:
+            if isinstance(unit, Mech) and self._heading_frames_active(unit):
+                shadow = mech_shadow_surface(sprite.get_width())
+                self.screen.blit(shadow, shadow.get_rect(center=(sx, sy + sprite.get_height() // 4)))
             # MC2 资产命中：精灵按格子尺寸缩放绘制；阵营描边/选中框/血条仍程序化。
             sprite_rect = sprite.get_rect(center=(sx, sy))
             self.screen.blit(sprite, sprite_rect)
@@ -555,14 +561,27 @@ class Renderer:
 
     def _unit_sprite(self, unit: Unit) -> pygame.Surface | None:
         """资产包单位精灵：机甲走存量 id 链（受损变体口径不变），载具/炮塔走
-        resolve_unit_sprite（kind → stem 常量）；未注入/未命中 → None。"""
+        resolve_unit_sprite（kind → stem 常量）；未注入/未命中 → None。
+
+        P4 朝向帧：机甲优先取 .ase 预渲染朝向帧（scaled_mech_heading_sprite，按
+        unit.heading 选帧）；未命中回退静态卡链（受损变体口径仅在静态卡路径生效，
+        docs/P4_DESIGN_20261121.md §8 偏离 2）。"""
         if self._assets is None:
             return None
         if isinstance(unit, Mech):
+            heading_sprite = self._assets.scaled_mech_heading_sprite(unit.id, unit.heading, TILE_SIZE_PX)
+            if heading_sprite is not None:
+                return heading_sprite
             damaged = unit.alive and unit.hull_ratio <= MECH_DAMAGED_HULL_RATIO
             return self._assets.scaled_mech_sprite(unit.id, TILE_SIZE_PX, damaged=damaged)
         damaged = unit.alive and unit.hull_ratio <= MECH_DAMAGED_HULL_RATIO
         return self._assets.scaled_unit_sprite(unit.sprite_kind, TILE_SIZE_PX, damaged=damaged)
+
+    def _heading_frames_active(self, unit: Mech) -> bool:
+        """机甲当前是否使用 .ase 朝向帧（脚影铺设条件；缓存命中零开销）。"""
+        if self._assets is None:
+            return False
+        return self._assets.scaled_mech_heading_sprite(unit.id, unit.heading, TILE_SIZE_PX) is not None
 
     def _draw_decorations(self, cam_x: float, cam_y: float) -> None:
         """环境点缀（Wave V1）：非道路空 tile 的树/房精灵，画在地形之上、机甲之下。
