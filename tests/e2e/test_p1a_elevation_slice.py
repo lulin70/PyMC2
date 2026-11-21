@@ -22,6 +22,8 @@ from pymc2.domain.orders.tactical_order import OrderOrigin, OrderType, TacticalO
 from pymc2.presentation.renderer import (
     _CLIFF_COLOR,
     _ROAD_COLOR,
+    _TINT_PER_LEVEL,
+    ELEVATION_STEP_PX,
     WINDOW_HEIGHT_PX,
     WINDOW_WIDTH_PX,
     Renderer,
@@ -121,10 +123,13 @@ def test_hills_terrain_slice(hills_game: main_module.Game) -> None:
     assert game.service.select_at(*_tile_center(PLAYER_SPAWN_TILE))  # 选中：HUD ELEV + 选中框
     main_module.run_frame(game, 1 / 60)
     cliff_x, cliff_y, cliff_e = _cliff_tile_in_view(grid)
-    top_face_y = cliff_y * TILE_SIZE_PX - cliff_e * 10 + 4  # flat 语义下属北邻行 → 证顶面上移
-    assert game.screen.get_at((cliff_x * TILE_SIZE_PX + 16, top_face_y))[:3] == _tile_color(cliff_x, cliff_y)
+    # 顶面内避开脚线（屏幕 y 可能被视口上缘裁剪 → 钳制），证顶面上移
+    top_face_y = max(2, cliff_y * TILE_SIZE_PX - cliff_e * ELEVATION_STEP_PX + 8)
+    lift = _TINT_PER_LEVEL * cliff_e  # V1.2：顶面按级提亮（ADD）
+    expected_top = tuple(min(255, c + lift) for c in _tile_color(cliff_x, cliff_y))
+    assert game.screen.get_at((cliff_x * TILE_SIZE_PX + 16, top_face_y))[:3] == expected_top
     e_south = grid.elevation_at((cliff_x, cliff_y + 1))
-    band_y = cliff_y * TILE_SIZE_PX + TILE_SIZE_PX - ((cliff_e + e_south) * 10) // 2  # 崖壁条带中部
+    band_y = cliff_y * TILE_SIZE_PX + TILE_SIZE_PX - ((cliff_e + e_south) * ELEVATION_STEP_PX) // 2  # 崖壁条带中部
     assert game.screen.get_at((cliff_x * TILE_SIZE_PX + 16, band_y))[:3] == _CLIFF_COLOR
     saved.append(save_screenshot(game.screen, "01_hills_opening.png"))
 
@@ -145,9 +150,9 @@ def test_hills_terrain_slice(hills_game: main_module.Game) -> None:
     assert px.move_target is None
     assert px.position == _tile_center(target)
     assert grid.elevation_at(px.tile) == 1  # 爬 1 级落位
-    # 机甲随 tile 高程同步上移（e=1 → 上移 10px，程序化方块阵营色）
+    # 机甲随 tile 高程同步上移（e=1 → 上移 STEP px，程序化方块阵营色）
     mx, my = int(px.x), int(px.y)
-    assert game.screen.get_at((mx, my - 10))[:3] == PLAYER_BODY_COLOR
+    assert game.screen.get_at((mx, my - ELEVATION_STEP_PX))[:3] == PLAYER_BODY_COLOR
     saved.append(save_screenshot(game.screen, "02_climbed_hill.png"))
 
     # --- 步骤 2：爬升 >1 目标被拒（回执 = dispatcher 失败惯例：指令入 order_log）---

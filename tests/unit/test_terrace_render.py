@@ -1,4 +1,8 @@
-"""P1-A terrace 渲染单测：版面偏移数学 / 崖壁出现条件 / y 排序权重 / HUD ELEV / CLI 开关。"""
+"""P1-A terrace 渲染单测：版面偏移数学 / 崖壁出现条件 / y 排序权重 / HUD ELEV / CLI 开关。
+
+V1.2（用户反馈「高度看不出来」）：STEP 16px + 顶面分级提亮（ADD）+ 北缘亮脚线 + 东/西缘暗条——
+顶面颜色断言改用同款 BLEND_RGB_ADD 复刻（_tinted），新增脚线/侧缘/提亮用例。
+"""
 
 from __future__ import annotations
 
@@ -10,6 +14,9 @@ from pymc2.domain.entities.mech import MAP_SIZE_PX, MAP_TILES, TILE_SIZE_PX, Fac
 from pymc2.main import _apply_terrain, parse_args
 from pymc2.presentation.renderer import (
     _CLIFF_COLOR,
+    _RIM_COLOR,
+    _SIDE_SHADE_WIDTH,
+    _TINT_PER_LEVEL,
     ELEVATION_STEP_PX,
     Renderer,
     _tile_color,
@@ -17,7 +24,16 @@ from pymc2.presentation.renderer import (
 from pymc2.services.battle_service import BattleService
 
 SCREEN_SIZE = (1280, 720)
-TOP_OFFSET = ELEVATION_MAX * ELEVATION_STEP_PX  # terrace 版面顶部预留（30px）
+TOP_OFFSET = ELEVATION_MAX * ELEVATION_STEP_PX  # terrace 版面顶部预留（48px）
+
+
+def _tinted(color: tuple[int, int, int], level: int) -> tuple[int, int, int]:
+    """顶面分级提亮复刻（与 renderer._terraced_terrain_surface 同款 BLEND_RGB_ADD）。"""
+    probe = pygame.Surface((1, 1))
+    probe.fill(color)
+    lift = _TINT_PER_LEVEL * level
+    probe.fill((lift, lift, lift), special_flags=pygame.BLEND_RGB_ADD)
+    return probe.get_at((0, 0))[:3]
 
 
 def _grid(elev: dict[tuple[int, int], int]) -> ElevationGrid:
@@ -114,13 +130,44 @@ class TestTerraceBake:
         assert renderer._terrain_y_offset == TOP_OFFSET
 
     def test_top_face_shifts_up_into_north_neighbor(self, screen: pygame.Surface) -> None:
-        """顶面 = tile 纹理上移 e*STEP：上移区在 flat 版面属北邻 → 颜色取本 tile。"""
+        """顶面 = tile 纹理上移 e*STEP 并按级提亮：上移区颜色 = 本 tile 纹理 × tint(e)。"""
         hx, hy = _distinct_color_tile()
         renderer = Renderer(screen, elevation=_grid({(hx, hy): 2}))
-        sample_surface_y = hy * TILE_SIZE_PX + 12  # 版面坐标：flat 语义下属北邻行
-        assert renderer._terrain.get_at((hx * TILE_SIZE_PX + 16, sample_surface_y))[:3] == _tile_color(hx, hy)
+        sample_surface_y = hy * TILE_SIZE_PX + 20  # 顶面内（避开北缘脚线 2px）
+        assert renderer._terrain.get_at((hx * TILE_SIZE_PX + 16, sample_surface_y))[:3] == _tinted(
+            _tile_color(hx, hy), 2
+        )
         flat = Renderer(screen)._terrain
         assert flat.get_at((hx * TILE_SIZE_PX + 16, sample_surface_y - TOP_OFFSET))[:3] == _tile_color(hx, hy - 1)
+
+    def test_top_face_brighter_than_untinted(self, screen: pygame.Surface) -> None:
+        """分级提亮可感知：e=2 顶面亮度严格高于原纹理（用户反馈「高度看不出来」回归钉）。"""
+        hx, hy = _distinct_color_tile()
+        renderer = Renderer(screen, elevation=_grid({(hx, hy): 2}))
+        sample_surface_y = hy * TILE_SIZE_PX + 20
+        got = renderer._terrain.get_at((hx * TILE_SIZE_PX + 16, sample_surface_y))[:3]
+        raw = _tile_color(hx, hy)
+        assert sum(got) > sum(raw)
+
+    def test_north_rim_line_when_north_lower(self, screen: pygame.Surface) -> None:
+        """北邻更低 → 顶面北缘 2px 亮脚线（等高线语义）；北邻同高 → 无脚线。"""
+        hx, hy = _distinct_color_tile()
+        rim_grid = _grid({(hx, hy): 2})  # 北邻缺省 0 < 2 → 画脚线
+        renderer = Renderer(screen, elevation=rim_grid)
+        rim_y = hy * TILE_SIZE_PX - 2 * ELEVATION_STEP_PX + TOP_OFFSET + 1  # 顶面北缘内 1px
+        assert renderer._terrain.get_at((hx * TILE_SIZE_PX + 16, rim_y))[:3] == _RIM_COLOR
+        no_rim_grid = _grid({(hx, hy): 2, (hx, hy - 1): 2})  # 北邻同高 → 不画脚线
+        renderer_no_rim = Renderer(screen, elevation=no_rim_grid)
+        north_y = hy * TILE_SIZE_PX - 2 * ELEVATION_STEP_PX + TOP_OFFSET + 0
+        assert renderer_no_rim._terrain.get_at((hx * TILE_SIZE_PX + 16, north_y))[:3] != _RIM_COLOR
+
+    def test_east_side_shade_when_east_lower(self, screen: pygame.Surface) -> None:
+        """东邻更低 → 顶面东缘 _SIDE_SHADE_WIDTH 暗条（零宽侧面近似）。"""
+        hx, hy = _distinct_color_tile()
+        renderer = Renderer(screen, elevation=_grid({(hx, hy): 2, (hx + 1, hy): 0}))
+        top_surface_y = hy * TILE_SIZE_PX - 2 * ELEVATION_STEP_PX + TOP_OFFSET + 16  # 顶面中部
+        strip_x = hx * TILE_SIZE_PX + TILE_SIZE_PX - _SIDE_SHADE_WIDTH + 1
+        assert renderer._terrain.get_at((strip_x, top_surface_y))[:3] == _CLIFF_COLOR
 
     def test_south_cliff_band_drawn_when_south_lower(self, screen: pygame.Surface) -> None:
         """南邻更低 → 顶面下缘与南邻顶面上缘之间填深色崖壁（高差×STEP）。"""
@@ -130,18 +177,23 @@ class TestTerraceBake:
         assert renderer._terrain.get_at((hx * TILE_SIZE_PX + 16, band_surface_y))[:3] == _CLIFF_COLOR
 
     def test_no_band_when_south_same_elevation(self, screen: pygame.Surface) -> None:
-        """南邻同高 → 无崖壁：条带区被南邻上移顶面覆盖（颜色 = 南邻纹理）。"""
+        """南邻同高 → 无崖壁：条带区被南邻上移顶面覆盖（颜色 = 南邻纹理×tint(2)）。"""
         hx, hy = _distinct_color_tile()
         renderer = Renderer(screen, elevation=_grid({(hx, hy): 2, (hx, hy + 1): 2}))
         band_surface_y = hy * TILE_SIZE_PX + 32 - 2 * ELEVATION_STEP_PX + TOP_OFFSET + 5
-        assert renderer._terrain.get_at((hx * TILE_SIZE_PX + 16, band_surface_y))[:3] == _tile_color(hx, hy + 1)
+        assert renderer._terrain.get_at((hx * TILE_SIZE_PX + 16, band_surface_y))[:3] == _tinted(
+            _tile_color(hx, hy + 1), 2
+        )
 
     def test_no_band_when_south_higher(self, screen: pygame.Surface) -> None:
         """南邻更高 → 无崖壁：残条带被南邻（抬得更高）顶面覆盖。"""
         hx, hy = _distinct_color_tile()
         renderer = Renderer(screen, elevation=_grid({(hx, hy): 1, (hx, hy + 1): 3}))
-        strip_surface_y = hy * TILE_SIZE_PX + 32 - ELEVATION_STEP_PX + TOP_OFFSET + 5  # 南邻更高 → 无崖壁
-        assert renderer._terrain.get_at((hx * TILE_SIZE_PX + 16, strip_surface_y))[:3] == _tile_color(hx, hy + 1)
+        # 南邻（e=3）顶面版面区间 [(hy+1)*32-3*STEP+TOP_OFFSET, +32)：取条带内中点
+        strip_surface_y = (hy + 1) * TILE_SIZE_PX - 3 * ELEVATION_STEP_PX + TOP_OFFSET + 8
+        assert renderer._terrain.get_at((hx * TILE_SIZE_PX + 16, strip_surface_y))[:3] == _tinted(
+            _tile_color(hx, hy + 1), 3
+        )
 
     def test_map_south_edge_counts_as_ground(self, screen: pygame.Surface) -> None:
         """地图南缘（越界视为 0）→ 边缘崖壁照画。"""

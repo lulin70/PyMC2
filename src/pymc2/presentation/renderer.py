@@ -73,7 +73,12 @@ _PANEL_LINE_STEP = 15
 _DROPTEAM_SLOT_COUNT = 4  # 原版 4 dropteam：选中机甲最多占 4 个槽位
 
 # P1-A terrace：tile 顶面每 1 级高程的屏幕上移量；侧面（南侧崖壁）深色正面。
-ELEVATION_STEP_PX = 10
+# V1.2（用户反馈「高度看不出来」）：STEP 10→16 + 顶面分级提亮 + 北缘亮脚线 +
+# 东/西缘暗条（纯 Y 投影下零宽侧面用边缘条近似，原 P1-A §5 偏离修订）。
+ELEVATION_STEP_PX = 16
+_TINT_PER_LEVEL = 16  # 顶面每级提亮增量（BLEND_RGB_ADD，暗部抬升/亮部钳制）
+_RIM_COLOR = (246, 246, 228)  # 顶面北缘亮脚线（等高线语义）
+_SIDE_SHADE_WIDTH = 3  # 东/西邻更低时顶面侧缘暗条宽度
 _CLIFF_COLOR = (40, 34, 28)
 
 
@@ -265,27 +270,56 @@ class Renderer:
         return self._terraced_terrain_surface(surface), ELEVATION_MAX * ELEVATION_STEP_PX
 
     def _terraced_terrain_surface(self, base: pygame.Surface) -> pygame.Surface:
-        """terrace 版面（P1-A）：底图下移 ELEVATION_MAX*STEP 预留顶部抬升空间，逐 tile
-        自北向南（行序）覆盖绘制——顶面 = 原 tile 纹理区上移 e*STEP（行序使高层顶面
-        正确压住北邻低层底边），南邻更低时补深色崖壁（高度 = 高差×STEP，上缘接本 tile
-        顶面下缘、下缘接南邻顶面上缘，两端精确衔接）；地图南缘越界视为 0 → 边缘崖壁。
-        北/东/西侧高差在本投影（纯 Y 偏移）下为零宽接缝，不单独画侧面（设计文档 §5）。"""
+        """terrace 版面（P1-A；V1.2 可读性增强）：底图下移 ELEVATION_MAX*STEP 预留顶部
+        抬升空间，逐 tile 自北向南（行序）覆盖绘制——顶面 = 原tile 纹理区上移 e*STEP
+        并按级提亮（高处更亮，BLEND_RGB_ADD），北邻更低补亮脚线、东/西邻更低补侧缘
+        暗条（纯 Y 投影零宽侧面的近似），南邻更低补深色崖壁（高度 = 高差×STEP，两端
+        精确衔接）；地图边缘越界视为 0 → 边缘崖壁/脚线照画。行序使高层顶面正确压住
+        北邻低层底边。"""
         assert self._elevation is not None
         grid = self._elevation
         offset = ELEVATION_MAX * ELEVATION_STEP_PX
         surface = pygame.Surface((MAP_SIZE_PX, MAP_SIZE_PX + offset))
         surface.blit(base, (0, offset))
+        # 顶面分级提亮：每级一份底图拷贝（一次性构建，ELEVATION_MAX+1 份；ADD 提亮）。
+        tinted: dict[int, pygame.Surface] = {0: base}
+        for level in range(1, ELEVATION_MAX + 1):
+            level_surface = base.copy()
+            lift = _TINT_PER_LEVEL * level
+            level_surface.fill((lift, lift, lift), special_flags=pygame.BLEND_RGB_ADD)
+            tinted[level] = level_surface
         for tile_y in range(MAP_TILES):
             for tile_x in range(MAP_TILES):
                 e = grid.elevation_at((tile_x, tile_y))
                 if e <= 0:
                     continue
                 shift = e * ELEVATION_STEP_PX
+                top_rect = pygame.Rect(tile_x * TILE_SIZE_PX, tile_y * TILE_SIZE_PX, TILE_SIZE_PX, TILE_SIZE_PX)
                 surface.blit(
-                    base,
-                    (tile_x * TILE_SIZE_PX, tile_y * TILE_SIZE_PX - shift + offset),
-                    pygame.Rect(tile_x * TILE_SIZE_PX, tile_y * TILE_SIZE_PX, TILE_SIZE_PX, TILE_SIZE_PX),
+                    tinted[e],
+                    (top_rect.x, top_rect.y - shift + offset),
+                    top_rect,
                 )
+                if grid.elevation_at((tile_x, tile_y - 1)) < e:
+                    surface.fill(
+                        _RIM_COLOR,
+                        pygame.Rect(top_rect.x, top_rect.y - shift + offset, TILE_SIZE_PX, 2),
+                    )
+                if grid.elevation_at((tile_x + 1, tile_y)) < e:
+                    surface.fill(
+                        _CLIFF_COLOR,
+                        pygame.Rect(
+                            top_rect.x + TILE_SIZE_PX - _SIDE_SHADE_WIDTH,
+                            top_rect.y - shift + offset,
+                            _SIDE_SHADE_WIDTH,
+                            TILE_SIZE_PX,
+                        ),
+                    )
+                if grid.elevation_at((tile_x - 1, tile_y)) < e:
+                    surface.fill(
+                        _CLIFF_COLOR,
+                        pygame.Rect(top_rect.x, top_rect.y - shift + offset, _SIDE_SHADE_WIDTH, TILE_SIZE_PX),
+                    )
                 e_south = grid.elevation_at((tile_x, tile_y + 1))
                 if e_south < e:
                     band_top = tile_y * TILE_SIZE_PX + TILE_SIZE_PX - shift + offset
