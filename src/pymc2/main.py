@@ -51,6 +51,7 @@ from pymc2.services.ai_commander import AiCommander
 from pymc2.services.battle_service import BattleService, create_m2_battle
 from pymc2.services.campaign_state import CampaignState, start_campaign
 from pymc2.services.mission_chain import MissionChain, MissionResult
+from pymc2.services.mission_pak_builder import MissionPakBuildError, build_battle_from_mission_pak
 from pymc2.services.order_dispatcher import OrderDispatcher
 from pymc2.services.refit_service import HIRE_COST_RP, RefitService
 
@@ -114,6 +115,18 @@ def parse_args(argv: Sequence[str] = ()) -> argparse.Namespace:
         default="flat",
         help="地形高程（P1-A）：flat=全零平面（默认，存量战局不变）；hills=确定性丘陵"
         "（terrace 渲染 + 移动代价 + 爬升限制；任务脚本 elevation 键可覆盖）",
+    )
+    parser.add_argument(
+        "--mission-pak",
+        type=Path,
+        default=None,
+        metavar="PATH",
+        help=(
+            "P3 内容驱动试玩：官方 MC2 任务 .pak 路径（如 ~/.pymc2/mc2-assets/Data/Missions/"
+            "tut_01.pak，只读本机缓存）——解析地形高程与单位布置构建单场战局"
+            "（同名 .fit 布置 + ../Objects/object2.pak 类型表自动推导）；"
+            "缺省关闭，走存量战役链"
+        ),
     )
     return parser.parse_args(list(argv))
 
@@ -432,6 +445,66 @@ def _apply_terrain(battle_service: BattleService, terrain: str, script_elevation
         battle_service.elevation = script_elevation
 
 
+def _default_object_types_path(pak_path: Path) -> Path:
+    """P3 类型表推导：任务 .pak 的 ../Objects/object2.pak（缓存布局约定，存在才用）。"""
+    return pak_path.parent.parent / "Objects" / "object2.pak"
+
+
+def _run_mission_pak_session(
+    args: argparse.Namespace,
+    screen: pygame.Surface,
+    asset_pack: MC2AssetPack | None,
+    clock: pygame.time.Clock,
+) -> int:
+    """P3 内容驱动试玩：官方任务 .pak 构建单场战局（不走战役链/整备，§6.10）。
+
+    玩家侧交互/Demo 与存量主循环同款；victory/defeat 谓词复用 MissionChain 静态口径；
+    无敌方单位时提示沙盒试玩（QUIT 退出）。"""
+    fit_path = args.mission_pak.with_suffix(".fit")
+    object_types_path = _default_object_types_path(args.mission_pak)
+    if not fit_path.exists():
+        print(f"[PyMC2] 任务布置文件缺失：{fit_path}（.pak 旁应有同名 .fit）")
+        return 1
+    try:
+        result = build_battle_from_mission_pak(args.mission_pak, fit_path, object_types_path)
+    except (MissionPakBuildError, ValueError) as exc:
+        print(f"[PyMC2] 任务 .pak 解析失败：{exc}")
+        return 1
+    battle = result.service
+    print(
+        f"[PyMC2] 任务 .pak 已加载：{args.mission_pak.name}"
+        f"（单位 {result.units_placed} / 高程 {result.elevation_min:.0f}..{result.elevation_max:.0f}m"
+        f" → 量化 0..3 / 裁剪窗 origin={result.crop_origin}）"
+    )
+    for notice in result.skipped_units[:8]:
+        print(f"   [跳过] {notice}")
+    if len(result.skipped_units) > 8:
+        print(f"   [跳过] …共 {len(result.skipped_units)} 条")
+    if result.degraded:
+        print("[PyMC2] 未找到 object2.pak 类型表：单位全按机甲降级布置（无载具/炮塔分派）")
+    enemies = [unit for unit in battle.mechs.values() if unit.faction is Faction.ENEMY]
+    if not enemies:
+        print("[PyMC2] 战局无敌方单位：沙盒试玩（QUIT 退出）")
+    player_ai = AiCommander(Faction.PLAYER) if args.demo else None
+    enemy_ai = AiCommander(Faction.ENEMY)
+    mode_label = "AI Demo" if args.demo else "Interactive"
+    pygame.display.set_caption(f"PyMC2 - Mission Pak ({args.mission_pak.stem}) [{mode_label}]")
+    game = create_game(screen, service=battle, asset_pack=asset_pack, demo_mode=args.demo)
+    while game.running and not MissionChain.is_victory(battle) and not MissionChain.is_defeat(battle):
+        if player_ai is not None:
+            player_ai.update(battle, game.dispatcher)
+        enemy_ai.update(battle, game.dispatcher)
+        dt = min(clock.tick(60) / 1000.0, MAX_FRAME_DT_S)
+        run_frame(game, dt)
+    if not game.running:
+        return 0
+    victory = MissionChain.is_victory(battle)
+    title = "MISSION ACCOMPLISHED" if victory else "MISSION FAILED"
+    print(f"== 任务 .pak 战局结束：{title} ==")
+    _show_settlement(game, title, (args.mission_pak.stem.upper(), "PRESS ENTER / SPACE / CLICK TO EXIT"), clock)
+    return 0
+
+
 def _print_settlement(state: CampaignState, result: MissionResult) -> None:
     """打印单任务结算摘要（文本 UI，M5 最小接线）。"""
     lost = "、".join(result.lost_unit_ids) if result.lost_unit_ids else "无"
@@ -512,9 +585,11 @@ def main(argv: Sequence[str] = ()) -> int:
     pygame.init()
     try:
         screen = pygame.display.set_mode((WINDOW_WIDTH_PX, WINDOW_HEIGHT_PX))
+        clock = pygame.time.Clock()
+        if args.mission_pak is not None:  # P3 内容驱动试玩（缺省关闭，存量路径不变）
+            return _run_mission_pak_session(args, screen, asset_pack, clock)
         mode_label = "AI Demo" if args.demo else "Interactive"
         pygame.display.set_caption(f"PyMC2 - M5 Campaign / M6 Mission Script ({mode_label})")
-        clock = pygame.time.Clock()
         state = start_campaign()
         chain = MissionChain()
         refit = RefitService()

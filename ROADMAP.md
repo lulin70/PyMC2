@@ -288,3 +288,36 @@ MC2 对齐说明：MC2 原版无真闪避（弹道即时命中），战术靠站
   docs/assets/uat_p2/。
   门禁：全量 593 passed / 0 failed（540 存量零语义改动 + 53 新增）+ ruff
   format/check + mypy（32 文件）全绿。
+
+## 交付后注记（2026-11-21）：P3 内容驱动切片（官方 .pak 任务包解析）
+
+- **设计文档**：[P3_DESIGN_20261121.md](docs/P3_DESIGN_20261121.md)（容器格式逆向/真实
+  文件证据/提取映射/裁剪清单/实现记录全留痕）。P1 高程与 P2 单位谱系语义零改动。
+- **容器格式逆向结论**（任务原文猜测的 pakfile.cpp/h 在 Shared Source 仓库不存在，
+  实际容器代码 = MCLib/Packet.cpp + packet.h 的 **PacketFile** 类；ffile.cpp 的
+  FastFile 是 .ff 资产库容器，任务 .pak 不用）：头 0xFEEDFACE（或 checksum 变体）+
+  seek 表（bit29-31 存储类型 + bit0-28 偏移）+ packet 数据区；RAW/FWF 透传、
+  ZLIB/LZD 首 u32 为 unpackedSize，HF 原版即不支持、LZD 官方任务实测零 packet
+  → Python 侧显式报错。
+- **真实 .pak 解析证据**（~/.pymc2 缓存，零入库）：tut_01.pak（1017 packets，
+  60×60 顶点高程 0..440.6m、4 静态对象）+ mc2_01.pak（1906 packets，100×100 顶点
+  高程 200..710m、**1000 静态对象 = 4+1000×40 字节精确吻合**）+ Data/Objects/
+  object2.pak 类型表（1188 packets：机甲 34/载具 62/炮塔 34/树 88/建筑 325）。
+  单位布置在任务 .fit [PartN]（mission.cpp createPartObject）：mc2_01 = 6 机甲 +
+  23 载具（object2.pak 类号 2/3 解析）。
+- **内容提取与战局构建**（infrastructure/pak_parser.py + mission_pak.py +
+  services/mission_pak_builder.py）：packet 0 PostcompVertex（32B）→ tile 高程 →
+  **40×40 最大覆盖滑窗**（确定性穷举：入窗最多 → 玩家优先 → 西北角；MC2 59..119
+  tile 地图 vs PyMC2 40×40 固有失配的裁剪策略）→ 窗内 min-max 线性量化
+  ElevationGrid 0..3（terrace/爬升/LOS 全链路生效）；.fit parts 类号分派
+  2→Mech/3→Vehicle/21→Turret（team0/PlayerPart→PLAYER）；pak packet 1 静态物仅炮塔
+  入局（team<0 中立按 ENEMY 守卫）；窗外单位跳过留痕。
+- **CLI**：`--mission-pak <path>`（缺省关闭，存量路径零改动）——同名 .fit +
+  ../Objects/object2.pak 自动推导；类型表缺失降级全按 Mech；单场试玩（victory/
+  defeat settlement，不入战役链）。
+- 验收：单测 40 例（容器 16 + 内容提取 14 含真实 .pak 本地可选 4 例 skipif +
+  构建器 10）+ e2e 2 条（fixture pak 实战：terrace 渲染 → 载具推进 → 炮塔守卫
+  开火 → victory 结算；量化网格移动链路），截图 4 张存 docs/assets/uat_p3/；
+  真实 CLI 冒烟双关（tut_01 沙盒 / mc2_01 19 单位入窗）。
+  门禁：全量 **635 passed / 0 failed**（593 存量零语义改动 + 42 新增）+ ruff
+  format/check + mypy（35 文件）全绿。

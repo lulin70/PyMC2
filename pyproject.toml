@@ -26,6 +26,7 @@ where = ["src"]
 [tool.pytest.ini_options]
 testpaths = ["tests"]
 timeout = 120
+pythonpath = ["tests"]  # tests/helpers（合成 .pak fixture）以 helpers.* 导入；存量测试导入方式不变
 
 [tool.ruff]
 line-length = 120
