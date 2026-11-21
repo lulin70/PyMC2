@@ -1,13 +1,14 @@
 """ElevationGrid（P1-A）：per-tile 高程数据模型 + 确定性丘陵生成。
 
-MC2 参照：任务地形高度图（per-tile elevation），移动代价与视线遮挡的数据源
-（视线遮挡属 P1-B，本切片只落数据与移动侧语义）。
+MC2 参照：任务地形高度图（per-tile elevation），移动代价与视线遮挡的数据源。
 
 约定：
 - 高程为 int 0..ELEVATION_MAX（构造时钳制）；地图外 tile 视为 0（平面延伸）。
 - climb_allowed：目标 tile 比出发 tile 高出 CLIMB_MAX_DELTA 以上 → 不可达（下坡/平地
   不限）。相邻 tile 为定义口径；非相邻（MOVE_TO 端点直判，无寻路简化）沿用同一公式，
   见 docs/P1A_DESIGN_20261121.md §5。
+- has_line_of_sight（P1-B）：Bresenham 途经 tile 遮挡判定（眼高 1 级线性插值模型），
+  is_flat 快路径恒通保证 flat 战局零行为改动，见 docs/P1B_DESIGN_20261121.md §1。
 - generate_hills：value noise（md5 哈希确定性，风格对齐 renderer 装饰撒点的 md5 确定性），
   道路 tile 与出生保护区强制归零，保证默认战局走廊可用。
 """
@@ -22,6 +23,7 @@ from pymc2.domain.entities.mech import MAP_TILES
 ELEVATION_MAX = 3
 CLIMB_MAX_DELTA = 1
 CLIMB_COST_PER_LEVEL = 1.5  # 进入 tile 每高出 1 级的步进耗时乘数（Δ 级复利）
+EYE_HEIGHT_LEVELS = 1  # P1-B 视线眼高（级）：视线端点 = tile 高程 + 1（简化遮挡模型）
 
 # 确定性丘陵生成参数（seed 风格对齐 renderer._DECORATION_SEED 的确定性撒点）。
 HILLS_SEED = 20261121
@@ -89,6 +91,42 @@ class ElevationGrid:
     def is_flat(self) -> bool:
         """全零平面（O(1)，构造时预计算）：flat 快路径下移动/渲染零改动。"""
         return self._max_elevation == 0
+
+    def has_line_of_sight(self, from_tile: tuple[int, int], to_tile: tuple[int, int]) -> bool:
+        """P1-B 视线判定：from_tile → to_tile 直射视线是否通（不含两端点）。
+
+        简化 MC2 遮挡模型（docs/P1B_DESIGN_20261121.md §1）：眼高 EYE_HEIGHT_LEVELS 级，
+        视线高度在两端点间线性插值（射手高程+1 → 目标高程+1），Bresenham 整数直线
+        遍历途经 tile（第 i 步插值比例 t = i/n，n = max(|dx|,|dy|)），途经 tile 高程
+        ≥ 插值视线高度 → 遮挡。is_flat 快路径恒通（flat 战局零行为改动）。
+        """
+        if self.is_flat():
+            return True
+        x0, y0 = from_tile
+        x1, y1 = to_tile
+        dx = abs(x1 - x0)
+        dy = abs(y1 - y0)
+        steps = max(dx, dy)
+        if steps <= 1:
+            return True  # 同格/相邻：无途经 tile
+        sight_start = float(self.elevation_at(from_tile) + EYE_HEIGHT_LEVELS)
+        sight_end = float(self.elevation_at(to_tile) + EYE_HEIGHT_LEVELS)
+        step_x = 1 if x1 > x0 else -1
+        step_y = 1 if y1 > y0 else -1
+        x, y = x0, y0
+        err = dx - dy
+        for step in range(1, steps):
+            e2 = 2 * err
+            if e2 > -dy:
+                err -= dy
+                x += step_x
+            if e2 < dx:
+                err += dx
+                y += step_y
+            sight_height = sight_start + (sight_end - sight_start) * (step / steps)
+            if self.elevation_at((x, y)) >= sight_height:
+                return False
+        return True
 
 
 def generate_hills(*, seed: int = HILLS_SEED) -> ElevationGrid:

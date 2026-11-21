@@ -623,6 +623,15 @@ class Renderer:
         if primary is not None:
             # P1-A：选中机甲所在 tile 高程（ASCII，收进现有状态行尾部惯例）。
             text += f" | ELEV: {self._tile_elevation(primary.tile)}"
+            # P1-B：锁定目标视线被地形遮挡提示（flat 快路径恒通 → 永不追加，
+            # 存量 flat 帧逐字节不变）。
+            target = service.get(primary.attack_target_id) if primary.attack_target_id is not None else None
+            if (
+                target is not None
+                and target.alive
+                and not service.elevation.has_line_of_sight(primary.tile, target.tile)
+            ):
+                text += " | NO LOS"
         if auto_command:
             text += " | AUTO: ON"
         if show_hints:

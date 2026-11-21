@@ -17,6 +17,13 @@ P1-A 高程：service 恒持有 ElevationGrid（缺省全零平面，flat 快路
 爬升限制目标 tile 高于当前 >CLIMB_MAX_DELTA 的 MOVE_TO 直接拒绝（回执沿用现有
 dispatcher 失败惯例：指令入 order_log、dispatch 返回 False）；高程不参与让路
 占位/互换判定（语义不变）。见 docs/P1A_DESIGN_20261121.md §2。
+
+P1-B 视线遮挡：fire_at（全路径击发咽喉）/ _nearest_enemy_in_range（锁定候选）/
+_auto_engage 下发条件三处联动 has_line_of_sight——视线被挡不击发、不作为新锁定
+候选、不下发自动交战指令；已锁定目标被挡不清锁（锁定有效性仍按存活+射程口径），
+仅抑制击发，冷却照常走（被挡 tick 未击发不写 cd_remaining，计时照常推进）；
+显式 ATTACK_OBJECT 被挡按指令失败惯例（入 order_log、dispatch False、锁不落）。
+flat 快路径恒通 → 存量零语义改动。见 docs/P1B_DESIGN_20261121.md §2。
 """
 
 from __future__ import annotations
@@ -233,9 +240,11 @@ class BattleService:
         return True
 
     def fire_at(self, attacker_id: str, target_id: str) -> bool:
-        """直射开火：校验存活/火力姿态/强制关机/武器可用/冷却/射程后判定命中。
+        """直射开火：校验存活/火力姿态/强制关机/武器可用/冷却/射程/视线后判定命中。
 
-        命中部位在开火瞬间按权重随机判定并随弹丸携带；开火成功即产热。
+        P1-B 视线复验（全路径击发咽喉）：视线被挡 → 不发射（无弹丸/无产热/不记技能/
+        不写冷却——弹未出膛不消耗冷却，计时照常走）。命中部位在开火瞬间按权重随机
+        判定并随弹丸携带；开火成功即产热。
         """
         attacker = self.mechs.get(attacker_id)
         target = self.mechs.get(target_id)
@@ -253,6 +262,8 @@ class BattleService:
             return False
         distance = math.hypot(target.x - attacker.x, target.y - attacker.y)
         if distance > attacker.weapon.range_px:
+            return False
+        if not self._has_line_of_sight(attacker, target):
             return False
         result = resolve_shot(attacker, target, self._rng)
         # M4 技能成长：开火即记账（uses 必增，命中加记 successes）。
@@ -381,14 +392,16 @@ class BattleService:
         return False
 
     def _auto_engage(self) -> None:
-        """自动交战（M7）：FREE 机甲对射程内最近敌机甲自动锁定并开火。
+        """自动交战（M7）：FREE 机甲对射程内且视线通视的最近敌机甲自动锁定并开火。
 
         - 显式目标（attack_target_id 仍有效）优先：SELF 只在无有效目标时接管，
           不覆盖玩家/指挥官已指定的目标；
-        - 目标死亡/出射程 → 清除锁定，随后 tick 自动重锁；
+        - 目标死亡/出射程 → 清除锁定，随后 tick 自动重锁（P1-B：锁定候选按 LOS
+          过滤——视线被挡的敌机甲不锁定；已锁定目标被挡不清锁，仅暂停击发）；
         - HOLD（火力纪律语义）不自动锁定；
-        - 仅在武器就绪/可用且非强制关机时下发 SELF 源 ATTACK_OBJECT（经 dispatcher
-          与玩家/指挥官同路径），冷却/关机期间不下发以免指令日志刷屏。
+        - 仅在武器就绪/可用且非强制关机且视线通视时下发 SELF 源 ATTACK_OBJECT
+          （经 dispatcher 与玩家/指挥官同路径），冷却/关机/被挡期间不下发以免
+          指令日志刷屏。
         """
         if self.dispatcher is None:
             return
@@ -398,7 +411,12 @@ class BattleService:
             target = self._engagement_target(mech)
             if target is None:
                 continue
-            if mech.weapon.ready and mech.weapon_operational and not mech.heat.shutdown_active:
+            if (
+                mech.weapon.ready
+                and mech.weapon_operational
+                and not mech.heat.shutdown_active
+                and self._has_line_of_sight(mech, target)
+            ):
                 self.dispatcher.dispatch(
                     TacticalOrder(
                         order_type=OrderType.ATTACK_OBJECT,
@@ -419,14 +437,16 @@ class BattleService:
         return self._nearest_enemy_in_range(mech)
 
     def _nearest_enemy_in_range(self, mech: Mech) -> Mech | None:
-        """射程内最近存活敌机甲（无则 None）；与 nearest_enemy 的区别在于按武器射程过滤。"""
+        """射程内且视线通视的最近存活敌机甲（无则 None）；与 nearest_enemy 的区别
+        在于按武器射程 + P1-B 视线过滤（被挡敌机甲不作锁定候选；nearest_enemy 供
+        AI 接近语义使用，不过滤 LOS）。"""
         best: Mech | None = None
         best_dist = float("inf")
         for other in self.mechs.values():
             if other.faction is mech.faction or not other.alive:
                 continue
             dist = math.hypot(other.x - mech.x, other.y - mech.y)
-            if dist <= mech.weapon.range_px and dist < best_dist:
+            if dist <= mech.weapon.range_px and dist < best_dist and self._has_line_of_sight(mech, other):
                 best, best_dist = other, dist
         return best
 
@@ -434,6 +454,11 @@ class BattleService:
     def _in_weapon_range(attacker: Mech, target: Mech) -> bool:
         """射程判定复用 fire_at 同款口径（欧氏距离 ≤ 武器射程）。"""
         return math.hypot(target.x - attacker.x, target.y - attacker.y) <= attacker.weapon.range_px
+
+    def _has_line_of_sight(self, attacker: Mech, target: Mech) -> bool:
+        """P1-B 视线判定（fire_at/锁定候选/自动交战下发共用口径）：两端 tile 经
+        ElevationGrid.has_line_of_sight 判挡，flat 快路径恒通（存量零改动）。"""
+        return self.elevation.has_line_of_sight(attacker.tile, target.tile)
 
     def _resolve_impact(self, projectile: Projectile) -> None:
         target = self.mechs.get(projectile.target_id)
