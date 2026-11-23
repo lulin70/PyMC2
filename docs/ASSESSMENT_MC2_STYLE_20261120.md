@@ -96,3 +96,13 @@
   画面变换（y 压缩 − 高度倾斜分量 + 按深度缩放）+ 点击拾取逆变换 + 命中/LOS 采样
   + 机甲朝向帧按新投影角重渲染 + 面板遮挡，工作量上修为 **5-8 天**（原估 4-6 偏低）。
 - 排期约束：斜投影先于行走相位动画落地（朝向帧需按新投影角重渲染，顺序颠倒会返工）。
+
+## 5. 镜头行为实证（2026-11-23，源码）：固定角度 + 自由滚动，不跟随单位
+
+- 源码证据：MCLib/Camera.h（ZoomIn/Out、tiltUp/Down、rotateLeft/Right、moveLeft/Right/Up/Down、
+  setPosition(swoopy)、usePerspective/projectionAngle/tiltFactor）+ Camera.cpp（updateGoalVelocity
+  平滑滚动）+ Data/Cameras/Cameras.fit（每关投影基准参数）。
+- 结论：**角度层** = 斜视角基准按关固定，正式版仅开放缩放（旋转不进对局）；**位置层** =
+  边缘滚动/热键自由平移（无 follow-mech 接口，setPosition 仅过场/脚本）。
+- 与本项目差异：现为「跟随选中机甲」顶视镜头。对齐项入远期池：自由滚动镜头（边缘滚动 +
+  快捷键跳回选中，去硬跟随）约 1-2 天；滚轮缩放约 1 天。
