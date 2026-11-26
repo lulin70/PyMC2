@@ -19,6 +19,7 @@ from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
 from pymc2.domain.elevation import ElevationGrid, generate_hills
+from pymc2.domain.scripting.objective import ObjectiveSet  # W1 任务 2：目标系统集成
 from pymc2.domain.scripting.trigger import (
     ACTION_KINDS,
     CONDITION_KINDS,
@@ -57,11 +58,13 @@ class MissionScript:
     """任务脚本：触发器表（登记序 = 执行序）；胜负由 victory/defeat 动作表达。
 
     elevation（P1-A 可选）：任务脚本高程覆盖；None = 无覆盖（战局保持地形默认）。
+    objectives（W1 任务 2）：目标系统；None = 无目标（战局无目标面板 + 胜负由 Trigger 显式决定）。
     """
 
     script_id: str
     triggers: tuple[Trigger, ...]
     elevation: ElevationGrid | None = None
+    objectives: ObjectiveSet | None = None  # W1 任务 2：HUD 目标 + 自动胜负判定
 
     @property
     def victory_triggers(self) -> tuple[Trigger, ...]:
@@ -189,7 +192,10 @@ class ScriptEngine:
         battle.tick_hook = self.tick
 
     def tick(self, battle: BattleService) -> list[str]:
-        """评估一帧：按登记序评估触发器，返回本帧触发的 trigger_id（PyCC2 模式）。"""
+        """评估一帧：按登记序评估触发器，返回本帧触发的 trigger_id（PyCC2 模式）。
+
+        W1 任务 2：每帧末尾更新目标状态 + 自动胜负判定（Trigger 触发 → Objective 完成）。
+        """
         self.tick_count += 1
         fired: list[str] = []
         for trigger in self.script.triggers:
@@ -209,8 +215,41 @@ class ScriptEngine:
             self._fire_counts[trigger.trigger_id] = self._fire_counts.get(trigger.trigger_id, 0) + 1
             self._last_fire_ticks[trigger.trigger_id] = self.tick_count
             fired.append(trigger.trigger_id)
+
+        # W1 任务 2：每帧末尾更新目标状态 + 自动胜负判定
+        self._update_objectives(battle)
+
         return fired
 
     def fire_count(self, trigger_id: str) -> int:
         """指定触发器的累计触发次数（验收/观察用）。"""
         return self._fire_counts.get(trigger_id, 0)
+
+    def _update_objectives(self, battle: BattleService) -> None:
+        """W1 任务 2：每 tick 更新目标状态 + 自动胜负判定。
+
+        流程：
+            1. 检查每个 PENDING 目标的关联 Trigger 是否触发
+            2. Trigger 触发 → Objective.status = COMPLETED
+            3. 所有 PRIMARY 完成 → ScriptContext.outcome = "victory"
+            4. 任意 PRIMARY 失败 → ScriptContext.outcome = "defeat"
+        """
+        if self.script.objectives is None:
+            return  # 无目标系统 → 跳过（胜负由 Trigger 显式 victory/defeat 动作决定）
+
+        from pymc2.domain.scripting.objective import ObjectiveStatus
+
+        # 更新目标状态（Trigger 触发 → Objective 完成）
+        for obj in self.script.objectives.objectives:
+            if obj.status != ObjectiveStatus.PENDING:
+                continue  # 已完成/失败 → 跳过（状态不可逆）
+
+            # W1 简化：obj.trigger_id 匹配同名 Trigger ID，Trigger 累计触发次数 >0 → Objective 完成
+            if obj.trigger_id and self.fire_count(obj.trigger_id) > 0:
+                obj.status = ObjectiveStatus.COMPLETED
+
+        # 自动胜负判定（PRIMARY 目标驱动）
+        if self.script.objectives.all_primary_completed():
+            self.context.outcome = "victory"  # 覆盖 ScriptContext.outcome（与 victory 动作等价）
+        if self.script.objectives.any_primary_failed():
+            self.context.outcome = "defeat"  # 覆盖 ScriptContext.outcome（与 defeat 动作等价）

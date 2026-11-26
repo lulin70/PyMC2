@@ -7,10 +7,10 @@ W1 任务 2：HUD 层目标展示 + 自动胜负判定（PRIMARY 全完成 → �
 from __future__ import annotations
 
 from dataclasses import dataclass
-from enum import Enum
+from enum import StrEnum
 
 
-class ObjectiveType(str, Enum):
+class ObjectiveType(StrEnum):
     """目标类型三分类。"""
 
     PRIMARY = "primary"  # 主要目标（全部完成 → 胜利）
@@ -18,7 +18,7 @@ class ObjectiveType(str, Enum):
     BONUS = "bonus"  # 奖励目标（隐藏/可选）
 
 
-class ObjectiveStatus(str, Enum):
+class ObjectiveStatus(StrEnum):
     """目标状态（单向状态机）。"""
 
     PENDING = "pending"  # 未完成
