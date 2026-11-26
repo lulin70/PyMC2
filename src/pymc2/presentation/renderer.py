@@ -44,6 +44,7 @@ from pymc2.domain.entities.unit import Unit
 from pymc2.domain.systems.ballistic import Projectile
 from pymc2.infrastructure.mc2_assets import MC2AssetPack
 from pymc2.infrastructure.mesh_render import mech_shadow_surface
+from pymc2.infrastructure.mission_pak import MissionTerrain  # W1 任务 1：pak 纹理映射数据源
 from pymc2.services.battle_service import BattleService
 
 WINDOW_WIDTH_PX = 1280
@@ -217,11 +218,14 @@ class Renderer:
         screen: pygame.Surface,
         asset_pack: MC2AssetPack | None = None,
         elevation: ElevationGrid | None = None,
+        mission_terrain: MissionTerrain | None = None,  # W1 任务 1：pak 纹理映射数据源
     ) -> None:
         self.screen = screen
         self._assets = asset_pack
         # P1-A 高程单一数据源（create_game 从 service.elevation 注入）；None = flat 语义。
         self._elevation = elevation
+        # W1 任务 1：pak 纹理映射（mission_terrain.terrain.tiles 提供 texture_id + terrain_type）
+        self._mission_terrain = mission_terrain
         self._terrain, self._terrain_y_offset = self._build_terrain()
         self._decorations: tuple[Decoration, ...] = ()
         self._font: pygame.font.Font | None = None
@@ -359,9 +363,39 @@ class Renderer:
         tile_y: int,
         seed: int,
     ) -> None:
-        """草地 tile：V11 族池 grass 纹理（Forest 派生帧，旧缓存回退 detail 系列）
-        缩放到格子尺寸；缺 grass 池回退 dirt 池，仍缺回退哈希草色。"""
-        texture = assets.scaled_ground_tile("grass", seed, TILE_SIZE_PX)
+        """草地 tile：W1 任务 1 pak 纹理优先 → V11 族池 grass 纹理回退。
+
+        路径：
+            1. pak terrain.tiles[row][col].texture_id → assets.ground_tile_by_index()
+            2. texture_id=None / pak 未注入 → V11 草地族池（Forest 派生帧）
+            3. grass 池空 → dirt 池回退
+            4. dirt 池空 → 程序化哈希草色
+        """
+        # W1 任务 1：pak 纹理查表优先（需要将 (tile_x, tile_y) → (row, col) MC2 坐标系）
+        texture = None
+        if self._mission_terrain is not None:
+            # tile_y = row（北→南行增），tile_x = col（西→东列增）
+            terrain = self._mission_terrain.terrain
+            if tile_y < len(terrain.tiles) and tile_x < len(terrain.tiles[tile_y]):
+                tile_data = terrain.tiles[tile_y][tile_x]
+                if tile_data.texture_id is not None:
+                    # pak texture_id → TGA 查表（triple fallback：TGA → undefined.tga → JPG pool → None）
+                    # ground_tile_by_index 已处理缩放（返回 64×64 px），直接缩放到 TILE_SIZE_PX
+                    indexed_texture = assets.ground_tile_by_index(
+                        tile_data.texture_id,
+                        tile_data.terrain_type or 0,
+                        fallback_kind="grass",
+                    )
+                    if indexed_texture is not None:
+                        # ground_tile_by_index 返回 64×64 px，缩放到 TILE_SIZE_PX
+                        if indexed_texture.get_size() != (TILE_SIZE_PX, TILE_SIZE_PX):
+                            texture = pygame.transform.scale(indexed_texture, (TILE_SIZE_PX, TILE_SIZE_PX))
+                        else:
+                            texture = indexed_texture
+
+        # 回退路径：V11 JPG 池草地纹理（Forest 派生帧，旧缓存回退 detail 系列）
+        if texture is None:
+            texture = assets.scaled_ground_tile("grass", seed, TILE_SIZE_PX)
         if texture is None:
             texture = assets.scaled_ground_tile("dirt", seed, TILE_SIZE_PX)
         if texture is not None:
@@ -378,16 +412,43 @@ class Renderer:
         tile_y: int,
         seed: int,
     ) -> None:
-        """道路 tile：V11 底色改 dirt 族泥径纹理（旧缓存回退 detail/草地池，行为不变）
-        + 2lanedirt overlay 叠加（tile 坐标确定性选帧）；overlay 整体缺失时回退程序化
-        路色 + 虚线（与现状逐像素一致）。"""
-        base = assets.scaled_ground_tile("dirt", seed, TILE_SIZE_PX)
+        """道路 tile：W1 任务 1 pak 纹理优先底色 → V11 dirt 族泥径回退 + 2lanedirt overlay。
+
+        路径：
+            1. pak texture_id → assets.ground_tile_by_index(fallback_kind="dirt")
+            2. texture_id=None / pak 未注入 → V11 dirt 族底色（Desert 派生帧）
+            3. dirt 池空 → grass 池回退 → 程序化草色
+            4. overlay：2lanedirt 序列（tile 坐标确定性选帧）→ 程序化虚线
+        """
+        # W1 任务 1：pak 纹理查表优先（底色）
+        base = None
+        if self._mission_terrain is not None:
+            terrain = self._mission_terrain.terrain
+            if tile_y < len(terrain.tiles) and tile_x < len(terrain.tiles[tile_y]):
+                tile_data = terrain.tiles[tile_y][tile_x]
+                if tile_data.texture_id is not None:
+                    indexed_texture = assets.ground_tile_by_index(
+                        tile_data.texture_id,
+                        tile_data.terrain_type or 0,
+                        fallback_kind="dirt",  # 道路用 dirt 族回退
+                    )
+                    if indexed_texture is not None:
+                        if indexed_texture.get_size() != (TILE_SIZE_PX, TILE_SIZE_PX):
+                            base = pygame.transform.scale(indexed_texture, (TILE_SIZE_PX, TILE_SIZE_PX))
+                        else:
+                            base = indexed_texture
+
+        # 回退路径：V11 dirt 族泥径底色
+        if base is None:
+            base = assets.scaled_ground_tile("dirt", seed, TILE_SIZE_PX)
         if base is None:
             base = assets.scaled_ground_tile("grass", seed, TILE_SIZE_PX)
         if base is not None:
             surface.blit(base, rect.topleft)
         else:
             surface.fill(_grass_color(tile_x, tile_y), rect)
+
+        # overlay：2lanedirt 道路覆盖（tile 坐标确定性选帧）
         overlaid = False
         for frame_index in _road_frame_indices(tile_x, tile_y):
             overlay = assets.scaled_ground_tile("road", frame_index, TILE_SIZE_PX)

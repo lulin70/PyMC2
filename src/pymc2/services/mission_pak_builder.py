@@ -184,7 +184,11 @@ def _crop_window(mission: MissionTerrain, marked_tiles: list[tuple[bool, tuple[i
 def _window_min_max(mission: MissionTerrain, window: tuple[int, int]) -> tuple[float, float]:
     """裁剪窗内原始高程范围（米）。"""
     row0, col0 = window
-    values = [value for row in mission.terrain.rows[row0 : row0 + MAP_TILES] for value in row[col0 : col0 + MAP_TILES]]
+    values = [
+        tile.elevation
+        for row_tiles in mission.terrain.tiles[row0 : row0 + MAP_TILES]
+        for tile in row_tiles[col0 : col0 + MAP_TILES]
+    ]
     return (min(values), max(values))
 
 
@@ -194,8 +198,8 @@ def quantize_window(mission: MissionTerrain, window: tuple[int, int]) -> Elevati
     min_value, max_value = _window_min_max(mission, window)
     span = max_value - min_value
     rows: list[list[int]] = []
-    for row in mission.terrain.rows[row0 : row0 + MAP_TILES]:
-        rows.append([_quantize(value, min_value, span) for value in row[col0 : col0 + MAP_TILES]])
+    for row_tiles in mission.terrain.tiles[row0 : row0 + MAP_TILES]:
+        rows.append([_quantize(tile.elevation, min_value, span) for tile in row_tiles[col0 : col0 + MAP_TILES]])
     return ElevationGrid(rows)
 
 

@@ -32,6 +32,8 @@ from pymc2.infrastructure.pak_parser import PacketStorageType, PakFile, PakParse
 WORLD_UNITS_PER_VERTEX = 128.0  # Terrain.cpp:76（两顶点间距 = 一 tile 的世界尺寸）
 _POSTCOMP_VERTEX_SIZE = 32  # Vertex.h PostcompVertex（16 字节对齐）
 _ELEVATION_OFFSET = 12  # vertexNormal 3×f32 之后的 elevation f32
+_TEXTURE_DATA_OFFSET = 16  # textureData u32（W1 任务 1：pak 纹理索引）
+_TERRAIN_TYPE_OFFSET = 20  # terrainType u32（W1 任务 1：地形类型枚举）
 _TERRAIN_PACKET = 0
 _OBJECTS_PACKET = 1
 _OBJECT_RECORD_SIZE = 40  # 10×i32（含 2 个 padding long，objmgr.cpp:811-824）
@@ -56,14 +58,27 @@ class MissionPakError(ValueError):
 
 
 @dataclass(frozen=True)
-class TerrainGrid:
-    """任务地形：每 tile 高程（米级 float，tile = 左上顶点值）+ 世界坐标换算。
+class TerrainTile:
+    """单个地形 tile 完整属性（左上顶点）：高程 + pak 纹理索引 + 地形类型。
 
-    rows[r][c] 为 MC2 tile (row=r, col=c) 的高程；tiles/边 = vertices_per_side − 1。
+    W1 任务 1：textureData u32@16 → Textures/64/*.tga 查表（triple fallback）；
+    terrainType u32@20 → 回退族推断（实测 mc2_01.pak 分布后确定映射）。
+    """
+
+    elevation: float  # 米级高程（原 f32@12）
+    texture_id: int | None  # textureData u32@16（None=全零 fallback）
+    terrain_type: int | None  # terrainType u32@20（None=未定义）
+
+
+@dataclass(frozen=True)
+class TerrainGrid:
+    """任务地形：每 tile 完整属性 + 世界坐标换算。
+
+    tiles[r][c] 为 MC2 tile (row=r, col=c) 的 TerrainTile；tiles/边 = vertices_per_side − 1。
     """
 
     vertices_per_side: int
-    rows: tuple[tuple[float, ...], ...]
+    tiles: tuple[tuple[TerrainTile, ...], ...]  # [row][col]，取代原 rows: tuple[tuple[float]]
 
     @property
     def tiles_per_side(self) -> int:
@@ -136,20 +151,34 @@ def load_mission_pak(path: Path) -> MissionTerrain:
 
 
 def _parse_terrain(blob: bytes) -> TerrainGrid:
-    """PostcompVertex 数组 → TerrainGrid（每 tile 取左上顶点 elevation）。"""
+    """PostcompVertex 数组 → TerrainGrid（每 tile 取左上顶点 TerrainTile）。
+
+    W1 任务 1：解析 textureData u32@16 + terrainType u32@20（全零→None 回退）。
+    """
     if len(blob) % _POSTCOMP_VERTEX_SIZE != 0:
         raise MissionPakError(f"terrain packet size {len(blob)} not a multiple of {_POSTCOMP_VERTEX_SIZE}")
     vertex_count = len(blob) // _POSTCOMP_VERTEX_SIZE
     side = int(round(vertex_count**0.5))
     if side * side != vertex_count or side < 2:
         raise MissionPakError(f"terrain vertex count {vertex_count} is not a square >= 2x2")
-    elevations = [
-        struct.unpack_from("<f", blob, index * _POSTCOMP_VERTEX_SIZE + _ELEVATION_OFFSET)[0]
-        for index in range(vertex_count)
-    ]
-    # tile = 左上顶点：tiles/边 = side − 1（dterrain.h TILESPERSIDE）。
-    rows = tuple(tuple(elevations[row * side + col] for col in range(side - 1)) for row in range(side - 1))
-    return TerrainGrid(vertices_per_side=side, rows=rows)
+
+    # 解析所有顶点属性（elevation + textureData + terrainType）
+    tiles_data: list[TerrainTile] = []
+    for index in range(vertex_count):
+        offset = index * _POSTCOMP_VERTEX_SIZE
+        (elevation,) = struct.unpack_from("<f", blob, offset + _ELEVATION_OFFSET)
+        (texture_data,) = struct.unpack_from("<I", blob, offset + _TEXTURE_DATA_OFFSET)  # u32
+        (terrain_type_raw,) = struct.unpack_from("<I", blob, offset + _TERRAIN_TYPE_OFFSET)  # u32
+
+        # 全零字段 → None（triple fallback 由 mc2_assets.py + renderer.py 处理）
+        texture_id = texture_data if texture_data != 0 else None
+        terrain_type = terrain_type_raw if terrain_type_raw != 0 else None
+
+        tiles_data.append(TerrainTile(elevation=elevation, texture_id=texture_id, terrain_type=terrain_type))
+
+    # tile = 左上顶点：tiles/边 = side − 1（dterrain.h TILESPERSIDE）
+    tiles = tuple(tuple(tiles_data[row * side + col] for col in range(side - 1)) for row in range(side - 1))
+    return TerrainGrid(vertices_per_side=side, tiles=tiles)
 
 
 def _parse_objects(blob: bytes) -> tuple[ObjPlacement, ...]:

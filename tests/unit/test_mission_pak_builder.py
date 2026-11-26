@@ -24,7 +24,7 @@ from helpers.pak_fixture import (
 from pymc2.domain.entities.mech import MAP_TILES, Faction, Mech
 from pymc2.domain.entities.turret import Turret
 from pymc2.domain.entities.vehicle import Vehicle
-from pymc2.infrastructure.mission_pak import MissionTerrain, TerrainGrid
+from pymc2.infrastructure.mission_pak import MissionTerrain, TerrainGrid, TerrainTile  # W1 Breaking Change
 from pymc2.services.mission_pak_builder import (
     MissionPakBuildError,
     build_battle_from_mission_pak,
@@ -215,11 +215,18 @@ def test_elevation_quantization(tmp_path: Path) -> None:
 
 def test_quantize_window_values() -> None:
     """quantize_window 线性真值：round((v−min)/span×3)；span==0 → 0。"""
-    grid = TerrainGrid(vertices_per_side=41, rows=tuple(tuple(float(c) for c in range(40)) for _ in range(40)))
+    tiles = tuple(
+        tuple(TerrainTile(elevation=float(c), texture_id=None, terrain_type=None) for c in range(40)) for _ in range(40)
+    )
+    grid = TerrainGrid(vertices_per_side=41, tiles=tiles)
     mission = MissionTerrain(terrain=grid, objects=())
     rows = quantize_window(mission, (0, 0)).rows
     assert rows[0][0] == 0 and rows[0][13] == 1 and rows[0][26] == 2 and rows[0][39] == 3
-    flat = TerrainGrid(vertices_per_side=41, rows=tuple((7.5,) * 40 for _ in range(40)))
+
+    flat_tiles = tuple(
+        tuple(TerrainTile(elevation=7.5, texture_id=None, terrain_type=None) for _ in range(40)) for _ in range(40)
+    )
+    flat = TerrainGrid(vertices_per_side=41, tiles=flat_tiles)
     assert all(
         value == 0 for row in quantize_window(MissionTerrain(terrain=flat, objects=()), (0, 0)).rows for value in row
     )

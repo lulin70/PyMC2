@@ -421,6 +421,9 @@ class MC2AssetPack:
         self._env_scaled_cache: dict[tuple[str, int], pygame.Surface | None] = {}
         self._button_layout: ButtonLayout | None = None
         self._button_layout_loaded = False
+        # W1 任务 1：pak texture_id → Textures/64/*.tga 路径索引（triple fallback）
+        self._texture_index: dict[int, Path] = {}
+        self._undefined_tga_path: Path | None = None  # undefined.tga fallback sprite
 
     @classmethod
     def load(cls, root: Path | str) -> MC2AssetPack | None:
@@ -474,9 +477,33 @@ class MC2AssetPack:
                 frames = _derive_biome_frames(path)
                 if frames:
                     ground_sequences[path.stem.lower()] = frames
+        # W1 任务 1：扫描 Textures/64/ 建立 texture_id → tga_path 索引
+        texture_index: dict[int, Path] = {}
+        undefined_tga_path: Path | None = None
+        ground_dir_path = data / GROUND_DIR  # Textures/64
+        if ground_dir_path.is_dir():
+            for tga_path in sorted(ground_dir_path.iterdir()):
+                if not tga_path.is_file() or tga_path.suffix.lower() != ".tga":
+                    continue
+                stem = tga_path.stem.lower()
+                # undefined.tga 单独记录（官方 fallback sprite）
+                if stem == "undefined":
+                    undefined_tga_path = tga_path
+                    continue
+                # 文件名 → texture_id 映射（实测 mc2_01.pak 分布后确认规则）
+                # 假设：{texture_id}.tga 或 {name}_{texture_id}.tga
+                try:
+                    texture_id = int(stem.split("_")[-1])
+                    texture_index[texture_id] = tga_path
+                except ValueError:
+                    continue  # 非数字 stem 跳过（杂项文件，不入索引）
+
         if not sprites and not ground_tiles and not ground_sequences and not overlay_sequences:
             return None
-        return cls(base, sprites, ground_tiles, overlay_sequences, ground_sequences)
+        pack = cls(base, sprites, ground_tiles, overlay_sequences, ground_sequences)
+        pack._texture_index = texture_index
+        pack._undefined_tga_path = undefined_tga_path
+        return pack
 
     def resolve_mech_sprite(self, chassis_kind: str, *, damaged: bool = False) -> pygame.Surface | None:
         """机甲模板/名 → 精灵：精确 stem → 包含匹配（大小写不敏感）→ None；结果缓存。
@@ -668,6 +695,56 @@ class MC2AssetPack:
             pool = self._overlay_sequences.get(ROAD_SEQUENCE_PREFIX, ())
         self._ground_pools[kind] = pool
         return pool
+
+    def ground_tile_by_index(
+        self,
+        texture_id: int,
+        terrain_type: int,
+        fallback_kind: str = "grass",
+    ) -> pygame.Surface | None:
+        """pak texture_id → Textures/64/ TGA（查表优先）→ triple fallback → None。
+
+        W1 任务 1：pak packet 0 textureData 字段（u32@16）→ 官方纹理优先渲染，
+        triple fallback chain：
+            1. texture_id in _texture_index → load TGA → force alpha=255 → scale to 64px
+            2. texture_id not in _texture_index → load "undefined.tga" (stem="undefined")
+            3. "undefined.tga" missing → ground_pool(fallback_kind)[0] (JPG pool first frame)
+            4. ground_pool empty → None (renderer draws solid color tile)
+
+        Args:
+            texture_id: pak packet 0 textureData 字段（u32）
+            terrain_type: pak packet 0 terrainType 字段（u32，当前版本未消费）
+            fallback_kind: JPG 池回退族（grass/dirt/rock/water/cement）
+
+        Returns:
+            纹理 Surface（64×64 px 缩放），优先 TGA；TGA 不存在时回退 ground_pool；
+            ground_pool 返回空列表时返回 None（调用方兜底程序化色块）。
+        """
+        # 路径 1：texture_id 查表 → Textures/64/*.tga
+        tga_path = self._texture_index.get(texture_id)
+        if tga_path is not None:
+            surface = _load_surface(tga_path, opaque=True)  # alpha=255 强制不透明
+            if surface is not None:
+                # 缩放到 64×64 px（统一 tile 渲染尺寸）
+                if surface.get_size() != (64, 64):
+                    surface = pygame.transform.scale(surface, (64, 64))
+                return surface
+
+        # 路径 2：undefined.tga fallback
+        if self._undefined_tga_path is not None and self._undefined_tga_path.is_file():
+            surface = _load_surface(self._undefined_tga_path, opaque=True)
+            if surface is not None:
+                if surface.get_size() != (64, 64):
+                    surface = pygame.transform.scale(surface, (64, 64))
+                return surface
+
+        # 路径 3：JPG 池回退（V1.1 程序化池）
+        pool = self.ground_pool(fallback_kind)
+        if pool:
+            return pool[0]  # 取首帧（确定性回退）
+
+        # 路径 4：None（渲染层回退程序化色块）
+        return None
 
     def resolve_ground(self, terrain_kind: str, seed: int = 0) -> pygame.Surface | None:
         """terrain_kind → 地面纹理：候选池按 ``seed % len`` 确定性选张（同 seed 同结果，

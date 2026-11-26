@@ -61,9 +61,9 @@ def test_terrain_vertex_to_tile(tmp_path: Path) -> None:
     mission = load_mission_pak(pak)
     assert mission.terrain.vertices_per_side == 60
     assert mission.terrain.tiles_per_side == 59
-    assert len(mission.terrain.rows) == 59
-    assert mission.terrain.rows[0][0] == 0.0  # 顶点 (0,0)
-    assert mission.terrain.rows[1][2] == float(1 * 60 + 2)  # tile (1,2) = 顶点 (1,2)
+    assert len(mission.terrain.tiles) == 59
+    assert mission.terrain.tiles[0][0].elevation == 0.0  # 顶点 (0,0)
+    assert mission.terrain.tiles[1][2].elevation == float(1 * 60 + 2)  # tile (1,2) = 顶点 (1,2)
 
 
 def test_world_to_tile_mapping(tmp_path: Path) -> None:
@@ -215,7 +215,7 @@ def test_real_tut_01_pak() -> None:
     """真实官方 tut_01.pak：60×60 顶点 / 高程 0..440.6 / 4 静态对象（设计文档 §2 证据）。"""
     mission = load_mission_pak(MISSIONS_DIR / "tut_01.pak")
     assert mission.terrain.vertices_per_side == 60
-    elevations = [value for row in mission.terrain.rows for value in row]
+    elevations = [tile.elevation for row_tiles in mission.terrain.tiles for tile in row_tiles]
     assert 0.0 < max(elevations) < 500.0  # 实测 0..440.6（米级原始值）
     assert len(mission.objects) == 4
     assert all(obj.team_id == -1 for obj in mission.objects)  # 中立静态物
@@ -227,8 +227,8 @@ def test_real_mc2_01_pak() -> None:
     mission = load_mission_pak(MISSIONS_DIR / "mc2_01.pak")
     assert mission.terrain.vertices_per_side == 100
     assert len(mission.objects) == 1000
-    assert len(mission.terrain.rows) == 99
-    elevations = [value for row in mission.terrain.rows for value in row]
+    assert len(mission.terrain.tiles) == 99
+    elevations = [tile.elevation for row_tiles in mission.terrain.tiles for tile in row_tiles]
     assert min(elevations) > 150.0 and max(elevations) < 750.0  # 实测 200..710
 
 
