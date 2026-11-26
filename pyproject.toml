@@ -31,10 +31,13 @@ pythonpath = ["tests"]  # tests/helpers（合成 .pak fixture）以 helpers.* �
 [tool.ruff]
 line-length = 120
 src = ["src", "tests"]
+# 全局 exclude（file_resolver 层）：lint 与 format 同时生效。
+# 注意不能只写在 [tool.ruff.lint]——ruff 0.17.5 的 [tool.ruff.format].exclude
+# 存在失效问题（连 .py 都不排除），format 会重排 MD 文档内嵌 Python 代码块。
+exclude = ["assets", "docs"]
 
 [tool.ruff.lint]
 select = ["E", "F", "W", "I", "B", "UP", "SIM"]
-exclude = ["assets", "docs"]
 
 [tool.mypy]
 python_version = "3.12"

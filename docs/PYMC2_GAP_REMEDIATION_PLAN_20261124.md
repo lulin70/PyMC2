@@ -25,6 +25,7 @@
 ## 2. 硬约束（每波必须满足）
 
 1. **四项门禁全绿**：`ruff format` + `ruff check` + `MYPYPATH=src mypy src/pymc2` + `SDL_VIDEODRIVER=dummy pytest -q`
+   - 事故记录（2026-11-26）：CI 因纯文档提交连续 5 次失败——ruff format 会重排 MD 内嵌 Python 代码块，而 `[tool.ruff.lint].exclude` 不作用于 format，且 ruff 0.17.5 的 `[tool.ruff.format].exclude` 失效（对照实验：连 docs 下 .py 也不排除）。修法：exclude 上移全局 `[tool.ruff]`（file_resolver 层，lint/format 同时生效）。教训：校验工具自身的配置也需按「每次提交全量门禁」验证，文档提交也要跑门禁。
 2. **行为保持**：存量测试零语义改动；flat 模式渲染逐字节一致（回归钉）
 3. **资产零入库**：MC2 官方资产只进 `~/.pymc2/mc2-assets`，仓库只有解析代码与程序化回退
 4. **CI 远端确认**：每波提交推送后盯守 GitHub Actions 绿灯再收口
