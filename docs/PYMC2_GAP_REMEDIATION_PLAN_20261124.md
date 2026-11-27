@@ -81,22 +81,24 @@
 - P10/P11（部署/运维）对本项目不适用（本地游戏项目，无生产环境），合并进 S6 收口步骤记录决策留痕，不单独立阶段。
 - 模块间整合测试时机：波内集成测试在 S5；跨波整合测试在阶段 E2E 切片（§3 Phase 1-4：W2 后 / W7 后 / W8 后 / W9 后），即**每阶段最后一个波收口后做阶段级整合验证**。
 
-### 7.2 W1 收口细化序列（当前进行中，严格串行）
+### 7.2 W1 收口细化序列（执行结果回写 2026-11-28）
 
 | 序 | 内容 | 校验 | 状态 |
 |----|------|------|------|
-| W1-S1 | 补 P8 缺口：HUD 目标面板（renderer.py 左上角半透明面板 + PRIMARY/SECONDARY 分组标题 + 程序化复选框） | 面板渲染 + 3 状态（pending/completed/failed）可复现 | 待做 |
-| W1-S2 | P9 单元/集成测试：补 test_objective.py + 引擎胜负判定集成测试（Trigger 触发 → objective completed → outcome=victory）；覆盖率 ≥80% | 新增测试全绿 + coverage 报告留痕 | 待做 |
-| W1-S3 | P9 E2E：5 张截图存 docs/assets/uat_w1/（pak 纹理开关前后对比 ×2 + 目标面板 3 状态 ×3）；验证视觉差异 >50% + undefined.tga 回退不崩溃 | 5 张图落盘 + 差异比对记录 | 待做 |
-| W1-S4 | 四门禁全绿 + 推送（7128bf8、0557de5 及后续）+ GitHub Actions 绿灯盯守 | CI success 留痕 | 待做 |
-| W1-S5 | 文档回写：本表 §1 W1 行补实际人天；W1_TEST_PLAN 状态更新；P10/P11 不适用决策留痕 | 文档 diff | 待做 |
-| **Gate** | **W1 收口门**：W1 DOD 全满足 | → W2-S1 启动 | 未达 |
+| W1-S1 | 补 P8 缺口：HUD 目标面板（renderer.py 左上角半透明面板 + PRIMARY/SECONDARY/BONUS 分组标题 + 程序化复选框） | 面板渲染 + 3 状态（pending/completed/failed）可复现 | ✅ 完成（c98b035：`_draw_objectives()` 实现，mypy 通过） |
+| W1-S2 | P9 单元/集成测试：补 test_objective.py + 引擎胜负判定集成测试（Trigger 触发 → objective completed → outcome=victory）；覆盖率 ≥80% | 新增测试全绿 + coverage 报告留痕 | ✅ 测试完成（18 新增，592 passed）；⚠️ 覆盖率未测量（pytest-cov 未安装，列入 W2 前置） |
+| W1-S3 | P9 E2E：5 张截图存 docs/assets/uat_w1/（pak 纹理开关前后对比 ×2 + 目标面板 3 状态 ×3）；验证视觉差异 >50% + undefined.tga 回退不崩溃 | 5 张图落盘 + 差异比对记录 | ⚠️ 部分完成（清单+验证命令+脚本方案落盘 uat_w1/README.md；5 张 PNG 待 GUI 环境执行） |
+| W1-S4 | 四门禁全绿 + 推送 + GitHub Actions 绿灯盯守 | CI success 留痕 | ✅ 完成（c98b035 推送 9d3163c..c98b035；CI run 46031120751 全绿：Mypy ✓ Pytest ✓ Ruff ✓） |
+| W1-S5 | 文档回写：本表 §1 W1 行补实际人天；W1_TEST_PLAN 状态更新；P10/P11 不适用决策留痕 | 文档 diff | ✅ 完成（本节即回写记录） |
+| **Gate** | **W1 收口门**：W1 DOD 全满足 | → W2-S1 启动 | ⏸ 条件待达（剩 2 项：E2E 截图 5 张实拍 + 覆盖率测量） |
 
-### 7.3 W1 遗留缺口清单（截至 2026-11-27 审计）
+**P10/P11 不适用决策留痕**（2026-11-28）：本项目为本地单机游戏复刻（PyMC2），无生产环境、无部署环节、无线上运维。P10 Deployment & Release 与 P11 Operations & Assurance 不作为独立阶段，其等效动作（发布打包、CI 质量门禁）已由每波 S6 收口步骤的 GitHub Actions 覆盖。此决策适用于 W1-W9 全部波次。
 
-1. HUD 目标面板未实现（W1_DESIGN §2.3）— W1-S1 补
-2. objective.py / 引擎集成无专属单元测试（W1_TEST_PLAN §2 规划 8 单元 + 4 集成，仅存量 574 passed）— W1-S2 补
-3. uat_w1/ 截图 0 张（DOD 要求 5 张）— W1-S3 补
-4. texture_id 非零率 >80%、视觉差异 >50% 未实测验证 — W1-S3 补
-5. 新代码覆盖率未测量 — W1-S2 补
-6. 2 个提交未推送、CI 远端未确认 — W1-S4 补
+### 7.3 W1 遗留缺口清单（2026-11-28 审计更新）
+
+1. ~~HUD 目标面板未实现~~ → ✅ W1-S1 已补（c98b035）
+2. ~~objective.py / 引擎集成无专属单元测试~~ → ✅ W1-S2 已补（18 测试全绿）
+3. uat_w1/ 截图 5 张待实拍（清单与脚本方案已就绪）→ ⏳ 待 GUI 环境执行
+4. texture_id 非零率 >80%、视觉差异 >50% 未实测验证 → ⏳ 随截图一并执行
+5. 新代码覆盖率未测量（pytest-cov 未安装）→ ⏳ W2-S1 前置补装 + 测量
+6. ~~2 个提交未推送、CI 远端未确认~~ → ✅ W1-S4 已补（run 46031120751 绿灯）
