@@ -239,3 +239,180 @@ class TestScriptEngine:
             )
         )
         assert mission_script_from_dict(payload) == script
+
+
+class TestObjectiveEngineIntegration:
+    """W1 任务 2：Objective 系统与 ScriptEngine 集成测试（Trigger 触发 → Objective 完成 → 自动胜负判定）。"""
+
+    def test_trigger_fire_completes_objective(self) -> None:
+        """Trigger 触发 → 关联 Objective 状态变为 COMPLETED。"""
+        from pymc2.domain.scripting.objective import (
+            Objective,
+            ObjectiveSet,
+            ObjectiveStatus,
+            ObjectiveType,
+        )
+
+        objectives = ObjectiveSet(
+            objectives=[
+                Objective(
+                    id="obj_01",
+                    type=ObjectiveType.PRIMARY,
+                    description="Destroy enemy base",
+                    trigger_id="destroy_base",
+                    status=ObjectiveStatus.PENDING,
+                ),
+            ]
+        )
+        script = mission_script_from_dict(
+            {
+                "script_id": "mission_01",
+                "triggers": [
+                    {
+                        "id": "destroy_base",
+                        "condition": {"kind": "enemy_destroyed"},
+                        "actions": [],
+                    }
+                ],
+            }
+        )
+        # 注入 objectives 到 MissionScript（替换原 script.objectives）
+        script = MissionScript(
+            script_id=script.script_id,
+            triggers=script.triggers,
+            elevation=script.elevation,
+            objectives=objectives,
+        )
+        context = ScriptContext(battle=_battle_with_player())
+        engine = ScriptEngine(script, context)
+
+        # 初始状态：目标 PENDING
+        assert objectives.objectives[0].status == ObjectiveStatus.PENDING
+
+        # 触发条件：摧毁敌人
+        battle = context.battle
+        battle.add_mech(Mech("ex-01", Faction.ENEMY, 0.0, 0.0))
+        ex = battle.get("ex-01")
+        assert ex is not None
+        ex.take_damage(ex.max_hull)
+
+        # Tick 后 Trigger 触发 → Objective 完成
+        fired = engine.tick(battle)
+        assert "destroy_base" in fired
+        assert objectives.objectives[0].status == ObjectiveStatus.COMPLETED
+
+    def test_all_primary_completed_sets_victory(self) -> None:
+        """所有 PRIMARY 完成 → ScriptContext.outcome = \"victory\"。"""
+        from pymc2.domain.scripting.objective import (
+            Objective,
+            ObjectiveSet,
+            ObjectiveStatus,
+            ObjectiveType,
+        )
+
+        objectives = ObjectiveSet(
+            objectives=[
+                Objective(
+                    "p1",
+                    ObjectiveType.PRIMARY,
+                    "Primary 1",
+                    "trigger_01",
+                    ObjectiveStatus.PENDING,
+                ),
+                Objective(
+                    "p2",
+                    ObjectiveType.PRIMARY,
+                    "Primary 2",
+                    "trigger_02",
+                    ObjectiveStatus.PENDING,
+                ),
+            ]
+        )
+        script = mission_script_from_dict(
+            {
+                "script_id": "mission_02",
+                "triggers": [
+                    {"id": "trigger_01", "condition": {"kind": "tick_reached", "params": {"tick": 1}}, "actions": []},
+                    {"id": "trigger_02", "condition": {"kind": "tick_reached", "params": {"tick": 2}}, "actions": []},
+                ],
+            }
+        )
+        script = MissionScript(
+            script_id=script.script_id,
+            triggers=script.triggers,
+            objectives=objectives,
+        )
+        context = ScriptContext(battle=_battle_with_player())
+        engine = ScriptEngine(script, context)
+
+        # Tick 1：trigger_01 触发，p1 完成，但 p2 未完成 → 未胜利
+        engine.tick(context.battle)
+        assert objectives.objectives[0].status == ObjectiveStatus.COMPLETED
+        assert objectives.objectives[1].status == ObjectiveStatus.PENDING
+        assert context.outcome is None
+
+        # Tick 2：trigger_02 触发，p2 完成，所有 PRIMARY 完成 → 自动胜利
+        engine.tick(context.battle)
+        assert objectives.objectives[1].status == ObjectiveStatus.COMPLETED
+        assert context.outcome == "victory"
+
+    def test_any_primary_failed_sets_defeat(self) -> None:
+        """任意 PRIMARY 失败 → ScriptContext.outcome = \"defeat\"。"""
+        from pymc2.domain.scripting.objective import (
+            Objective,
+            ObjectiveSet,
+            ObjectiveStatus,
+            ObjectiveType,
+        )
+
+        objectives = ObjectiveSet(
+            objectives=[
+                Objective(
+                    "p1",
+                    ObjectiveType.PRIMARY,
+                    "Primary 1",
+                    None,
+                    ObjectiveStatus.COMPLETED,
+                ),
+                Objective(
+                    "p2",
+                    ObjectiveType.PRIMARY,
+                    "Primary 2",
+                    None,
+                    ObjectiveStatus.FAILED,  # 手动设置失败状态
+                ),
+            ]
+        )
+        script = MissionScript(
+            script_id="mission_03",
+            triggers=(),
+            objectives=objectives,
+        )
+        context = ScriptContext(battle=_battle_with_player())
+        engine = ScriptEngine(script, context)
+
+        # Tick → 检测到 PRIMARY 失败 → 自动失败
+        engine.tick(context.battle)
+        assert context.outcome == "defeat"
+
+    def test_no_objectives_no_auto_outcome(self) -> None:
+        """无 objectives 时不触发自动胜负判定（胜负由 Trigger 显式 victory/defeat 动作决定）。"""
+        script = mission_script_from_dict(
+            {
+                "script_id": "mission_04",
+                "triggers": [
+                    {
+                        "id": "win",
+                        "condition": {"kind": "tick_reached", "params": {"tick": 1}},
+                        "actions": [{"kind": "victory"}],
+                    }
+                ],
+            }
+        )
+        # script.objectives = None（默认）
+        context = ScriptContext(battle=_battle_with_player())
+        engine = ScriptEngine(script, context)
+
+        # Tick 1：Trigger victory 动作触发 → outcome = "victory"
+        engine.tick(context.battle)
+        assert context.outcome == "victory"

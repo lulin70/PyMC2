@@ -41,6 +41,7 @@ from pymc2.domain.entities.mech import (
 )
 from pymc2.domain.entities.turret import Turret
 from pymc2.domain.entities.unit import Unit
+from pymc2.domain.scripting.objective import ObjectiveSet, ObjectiveStatus, ObjectiveType  # W1 HUD
 from pymc2.domain.systems.ballistic import Projectile
 from pymc2.infrastructure.mc2_assets import MC2AssetPack
 from pymc2.infrastructure.mesh_render import mech_shadow_surface
@@ -219,6 +220,7 @@ class Renderer:
         asset_pack: MC2AssetPack | None = None,
         elevation: ElevationGrid | None = None,
         mission_terrain: MissionTerrain | None = None,  # W1 任务 1：pak 纹理映射数据源
+        objectives: ObjectiveSet | None = None,  # W1 任务 2：HUD 目标面板数据源
     ) -> None:
         self.screen = screen
         self._assets = asset_pack
@@ -226,14 +228,20 @@ class Renderer:
         self._elevation = elevation
         # W1 任务 1：pak 纹理映射（mission_terrain.terrain.tiles 提供 texture_id + terrain_type）
         self._mission_terrain = mission_terrain
+        # W1 任务 2：HUD 目标面板（objectives 提供三分类目标状态）
+        self._objectives = objectives
         self._terrain, self._terrain_y_offset = self._build_terrain()
         self._decorations: tuple[Decoration, ...] = ()
         self._font: pygame.font.Font | None = None
+        self._font_bold: pygame.font.Font | None = None
         try:
             pygame.font.init()
             self._font = pygame.font.Font(None, 16)
+            self._font_bold = pygame.font.Font(None, 20)  # W1 HUD 面板标题字体
+            self._font_bold.set_bold(True)
         except Exception:  # noqa: BLE001 - 无字体环境下降级为无标签
             self._font = None
+            self._font_bold = None
         # Wave V3 UI 面板：布局/部件在 __init__ 一次性预合成（布局坐标随资产固定，
         # 不随帧变化）；panel_offset 随窗口尺寸计算（1280×720 → (128, −48)）。
         self._layout = self._assets.button_layout if self._assets is not None else None
@@ -534,6 +542,9 @@ class Renderer:
         else:
             self._draw_hud(service, auto_command=auto_command, show_hints=show_hints)
 
+        # W1 任务 2：HUD 目标面板（左上角，覆盖地形层，始终可见）
+        self._draw_objectives()
+
     def _build_panel_surface(self) -> pygame.Surface | None:
         """按布局 bbox 预合成整块面板（Wave V3，每帧 1 blit）：部件逐个 blit 到
         bbox 局部坐标（负 dest 补边合法）；布局缺失时返回 None（回退现状 HUD）。"""
@@ -787,3 +798,115 @@ class Renderer:
             pygame.draw.circle(self.screen, _ENERGY_PROJECTILE_COLOR, (sx, sy), 3)
         else:
             pygame.draw.circle(self.screen, _PROJECTILE_COLOR, (sx, sy), 3)
+
+    def _draw_objectives(self) -> None:
+        """W1 任务 2：HUD 目标面板（左上角半透明背景 + 分组标题 + 程序化复选框）。
+
+        布局：左上角 (10, 10) 偏移，宽 400px × 高自适应，半透明黑背景 alpha=180。
+        分组：PRIMARY / SECONDARY / BONUS（有目标才显示分组标题）。
+        复选框：12×12px，绿勾（√）/ 白框（☐）/ 红叉（✗）。
+        """
+        if self._objectives is None or not self._objectives.objectives:
+            return  # 无目标系统或空目标列表 → 不绘制面板
+
+        # 半透明背景面板（黑色 alpha=180，遮罩效果）
+        panel_x, panel_y = 10, 10
+        panel_width = 400
+        line_height = 20
+
+        # 计算面板高度：标题 + 各分组（标题 + 目标列表）
+        title_height = 30
+        group_heights = []
+        for obj_type in [ObjectiveType.PRIMARY, ObjectiveType.SECONDARY, ObjectiveType.BONUS]:
+            type_objs = [obj for obj in self._objectives.objectives if obj.type == obj_type]
+            if type_objs:
+                group_heights.append(25 + len(type_objs) * line_height)  # 分组标题 25px + 每目标 20px
+
+        panel_height = title_height + sum(group_heights) + 10  # 底部留 10px padding
+        panel_rect = pygame.Rect(panel_x, panel_y, panel_width, panel_height)
+        panel_surf = pygame.Surface(panel_rect.size, pygame.SRCALPHA)
+        panel_surf.fill((0, 0, 0, 180))  # 黑色半透明 alpha=180
+        self.screen.blit(panel_surf, panel_rect.topleft)
+
+        # 面板标题（白色加粗 20px）
+        if self._font_bold is not None:
+            title = self._font_bold.render("MISSION OBJECTIVES", True, (255, 255, 255))
+            self.screen.blit(title, (panel_x + 10, panel_y + 5))
+
+        # 分组渲染
+        y_offset = panel_y + title_height
+        for obj_type in [ObjectiveType.PRIMARY, ObjectiveType.SECONDARY, ObjectiveType.BONUS]:
+            type_objs = [obj for obj in self._objectives.objectives if obj.type == obj_type]
+            if not type_objs:
+                continue  # 跳过空组
+
+            # 分组标题（灰白色 16px）
+            if self._font is not None:
+                group_title = self._font.render(
+                    f"{obj_type.value.upper()}:",
+                    True,
+                    (200, 200, 200),
+                )
+                self.screen.blit(group_title, (panel_x + 10, y_offset))
+            y_offset += 25
+
+            # 目标列表
+            for obj in type_objs:
+                # 程序化复选框（12×12px，左对齐 20px）
+                checkbox_x = panel_x + 20
+                checkbox_y = y_offset + 4  # 垂直居中对齐文本基线
+                checkbox_color = {
+                    ObjectiveStatus.COMPLETED: (0, 255, 0),  # 绿色
+                    ObjectiveStatus.FAILED: (255, 0, 0),  # 红色
+                    ObjectiveStatus.PENDING: (255, 255, 255),  # 白色
+                }[obj.status]
+
+                # 绘制复选框边框（2px 线宽）
+                pygame.draw.rect(
+                    self.screen,
+                    checkbox_color,
+                    (checkbox_x, checkbox_y, 12, 12),
+                    2,  # 边框宽度
+                )
+
+                # 绘制状态符号
+                if obj.status == ObjectiveStatus.COMPLETED:
+                    # 绿勾（√）：两条斜线组成对勾
+                    pygame.draw.line(
+                        self.screen,
+                        checkbox_color,
+                        (checkbox_x + 2, checkbox_y + 6),
+                        (checkbox_x + 5, checkbox_y + 9),
+                        2,
+                    )
+                    pygame.draw.line(
+                        self.screen,
+                        checkbox_color,
+                        (checkbox_x + 5, checkbox_y + 9),
+                        (checkbox_x + 10, checkbox_y + 2),
+                        2,
+                    )
+                elif obj.status == ObjectiveStatus.FAILED:
+                    # 红叉（✗）：两条对角线
+                    pygame.draw.line(
+                        self.screen,
+                        checkbox_color,
+                        (checkbox_x + 2, checkbox_y + 2),
+                        (checkbox_x + 10, checkbox_y + 10),
+                        2,
+                    )
+                    pygame.draw.line(
+                        self.screen,
+                        checkbox_color,
+                        (checkbox_x + 10, checkbox_y + 2),
+                        (checkbox_x + 2, checkbox_y + 10),
+                        2,
+                    )
+                # PENDING 状态只画边框，不画符号
+
+                # 目标描述文本（白色 16px，右侧对齐复选框）
+                if self._font is not None:
+                    desc = self._font.render(obj.description, True, (255, 255, 255))
+                    self.screen.blit(desc, (checkbox_x + 18, y_offset))
+
+                y_offset += line_height
