@@ -119,6 +119,13 @@ def parse_args(argv: Sequence[str] = ()) -> argparse.Namespace:
         "（terrace 渲染 + 移动代价 + 爬升限制；任务脚本 elevation 键可覆盖）",
     )
     parser.add_argument(
+        "--projection",
+        choices=("top", "isometric"),
+        default="top",
+        help="投影模式（W3）：top=顶视正交（默认，逐字节存量）；isometric=固定 30° "
+        "倾角仿射斜投影（仅渲染层，逻辑层世界坐标不变）",
+    )
+    parser.add_argument(
         "--mission-pak",
         type=Path,
         default=None,
@@ -176,19 +183,21 @@ def create_game(
     demo_mode: bool = False,
     mission_id: str | None = None,
     requisition_points: int | None = None,
+    projection: str = "top",
 ) -> Game:
     """组装一局战斗（service/commander/asset_pack 可注入以便测试固定随机源与 AI/资产开关）。
 
     自动交战接线：service.dispatcher 指向本局 dispatcher——BattleService.tick 产出的
     SELF 源自动交战指令与玩家/指挥官指令同源同路径（无需接线的直构战局保持关闭）。
     mission_id/requisition_points：V3 面板槽位内容（默认 None → 槽位不画）。
+    projection：W3 投影模式（"top"|"isometric"，透传 Renderer；测试可注入）。
     """
     battle = service if service is not None else create_m2_battle()
     game = Game(
         screen=screen,
         service=battle,
         # P1-A：Renderer 高程单一数据源（service.elevation；flat/未注入 → 渲染零改动）。
-        renderer=Renderer(screen, asset_pack=asset_pack, elevation=battle.elevation),
+        renderer=Renderer(screen, asset_pack=asset_pack, elevation=battle.elevation, projection=projection),
         commander=commander,
         demo_mode=demo_mode,
         mission_id=mission_id,
@@ -224,8 +233,8 @@ def _clamp(value: float, low: float, high: float) -> float:
 
 
 def _world_pos(game: Game, screen_pos: tuple[int, int]) -> tuple[float, float]:
-    """屏幕坐标 → 世界坐标（加上相机偏移）。"""
-    return (screen_pos[0] + game.camera.x, screen_pos[1] + game.camera.y)
+    """屏幕坐标 → 世界坐标（W3：委托 Renderer 单一逆变换入口，isometric 两段式高程回补）。"""
+    return game.renderer.screen_to_world(screen_pos[0], screen_pos[1], game.camera.x, game.camera.y)
 
 
 def update_camera(game: Game) -> None:
@@ -234,7 +243,11 @@ def update_camera(game: Game) -> None:
     if mech is None:
         return
     max_x = max(0.0, MAP_SIZE_PX - game.screen.get_width())
-    max_y = max(0.0, MAP_SIZE_PX - game.screen.get_height())
+    # W3 isometric：地图有效纵向跨度 = 缩放后地形高 + 顶部预留（top 保持存量钳制逐字节不变）。
+    if game.renderer.is_isometric:
+        max_y = max(0.0, game.renderer.terrain_screen_height() - game.screen.get_height())
+    else:
+        max_y = max(0.0, MAP_SIZE_PX - game.screen.get_height())
     game.camera.x = _clamp(mech.x - game.screen.get_width() / 2, 0.0, max_x)
     game.camera.y = _clamp(mech.y - game.screen.get_height() / 2, 0.0, max_y)
 
@@ -532,7 +545,7 @@ def _run_mission_pak_session(
     enemy_ai = AiCommander(Faction.ENEMY)
     mode_label = "AI Demo" if args.demo else "Interactive"
     pygame.display.set_caption(f"PyMC2 - Mission Pak ({args.mission_pak.stem}) [{mode_label}]")
-    game = create_game(screen, service=battle, asset_pack=asset_pack, demo_mode=args.demo)
+    game = create_game(screen, service=battle, asset_pack=asset_pack, demo_mode=args.demo, projection=args.projection)
     while game.running and not MissionChain.is_victory(battle) and not MissionChain.is_defeat(battle):
         if player_ai is not None:
             player_ai.update(battle, game.dispatcher)
@@ -654,7 +667,9 @@ def main(argv: Sequence[str] = ()) -> int:
             engine = ScriptEngine(script, context)
             if state.mission_index == 0:
                 engine.attach(battle)  # 示例脚本叙事对应首关（增援/RP 奖励/胜负）
-            game = create_game(screen, service=battle, asset_pack=asset_pack, demo_mode=args.demo)
+            game = create_game(
+                screen, service=battle, asset_pack=asset_pack, demo_mode=args.demo, projection=args.projection
+            )
             game.mission_id = mission.mission_id  # V3 面板任务名槽位
             while (
                 game.running

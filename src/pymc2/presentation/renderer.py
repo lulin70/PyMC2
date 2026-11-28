@@ -46,6 +46,13 @@ from pymc2.domain.systems.ballistic import Projectile
 from pymc2.infrastructure.mc2_assets import MC2AssetPack
 from pymc2.infrastructure.mesh_render import mech_shadow_surface
 from pymc2.infrastructure.mission_pak import MissionTerrain  # W1 任务 1：pak 纹理映射数据源
+from pymc2.presentation.projection import (
+    ISO_Y_SCALE,
+    PROJECTION_ISO,
+    PROJECTION_TOP,
+    screen_to_world_iso,
+    world_to_screen_iso,
+)
 from pymc2.services.battle_service import BattleService
 
 WINDOW_WIDTH_PX = 1280
@@ -221,16 +228,27 @@ class Renderer:
         elevation: ElevationGrid | None = None,
         mission_terrain: MissionTerrain | None = None,  # W1 任务 1：pak 纹理映射数据源
         objectives: ObjectiveSet | None = None,  # W1 任务 2：HUD 目标面板数据源
+        projection: str = PROJECTION_TOP,  # W3 斜投影 MVP：top（存量缺省）/isometric
     ) -> None:
         self.screen = screen
         self._assets = asset_pack
         # P1-A 高程单一数据源（create_game 从 service.elevation 注入）；None = flat 语义。
         self._elevation = elevation
+        # W3 斜投影：top 恒等存量（逐字节回归钉）；isometric 走仿射分支（仅渲染层，
+        # 逻辑层世界坐标不变——设计 §1 依赖方向）。
+        self._iso = projection == PROJECTION_ISO
         # W1 任务 1：pak 纹理映射（mission_terrain.terrain.tiles 提供 texture_id + terrain_type）
         self._mission_terrain = mission_terrain
         # W1 任务 2：HUD 目标面板（objectives 提供三分类目标状态）
         self._objectives = objectives
-        self._terrain, self._terrain_y_offset = self._build_terrain()
+        if self._iso:
+            # W3 isometric：地形整面纵向缩放（smoothscale 仅 __init__ 一次，NFR 性能）。
+            # 丘陵 terrace 烘焙偏移随整面同比压缩 → 与实体 _elev_offset 压缩系数一致（§3 推导）。
+            base, offset = self._build_terrain()
+            self._terrain = pygame.transform.smoothscale(base, (MAP_SIZE_PX, int(MAP_SIZE_PX * ISO_Y_SCALE)))
+            self._terrain_y_offset = int(offset * ISO_Y_SCALE)
+        else:
+            self._terrain, self._terrain_y_offset = self._build_terrain()
         self._decorations: tuple[Decoration, ...] = ()
         self._font: pygame.font.Font | None = None
         self._font_bold: pygame.font.Font | None = None
@@ -474,8 +492,42 @@ class Renderer:
         """注入环境点缀（create_game 按确定性 seed 撒点后传入；渲染层纯 blit 不影响玩法）。"""
         self._decorations = decorations
 
+    @property
+    def is_isometric(self) -> bool:
+        """W3：当前投影是否 isometric（main.update_camera 相机钳制分支用）。"""
+        return self._iso
+
+    def terrain_screen_height(self) -> int:
+        """地形（含 terrace 顶部预留）的有效屏幕高度（isometric 相机钳制边界）。
+
+        top 模式不使用（存量钳制 = MAP_SIZE_PX，逐字节不变）；isometric 下地图
+        有效纵向跨度 = 缩放后表面高 + 顶部偏移。"""
+        return self._terrain.get_height() + self._terrain_y_offset
+
     def world_to_screen(self, x: float, y: float, cam_x: float, cam_y: float) -> tuple[int, int]:
+        if self._iso:
+            return world_to_screen_iso(x, y, cam_x, cam_y)
         return (int(x - cam_x), int(y - cam_y))
+
+    def screen_to_world(self, sx: float, sy: float, cam_x: float, cam_y: float) -> tuple[float, float]:
+        """点击拾取逆变换（W3 单一入口，main._world_pos 委托至此）。
+
+        top：恒等存量 ``_world_pos`` 输出。isometric：小窗口一致行搜索——高程抬升使
+        忽略高程的近似落点偏北 e×STEP 世界 px，近似行号可能落入北邻；自南向北检查
+        ELEVATION_MAX+1 行，取首个「行号 = 落点行号」一致的最高高程行（射线拾取惯例：
+        先命中更高表面），窗口 O(ELEVATION_MAX) 常数（设计 §4）。全不一致 → 近似落点。
+        """
+        if not self._iso:
+            return (sx + cam_x, sy + cam_y)
+        wx, wy = screen_to_world_iso(sx, sy, cam_x, cam_y)
+        tx = int(wx) // TILE_SIZE_PX
+        base_row = int(wy) // TILE_SIZE_PX
+        for row in range(min(base_row + ELEVATION_MAX, MAP_TILES - 1), base_row - 1, -1):
+            e = self._tile_elevation((tx, row))
+            candidate = wy + e * ELEVATION_STEP_PX
+            if int(candidate) // TILE_SIZE_PX == row:
+                return (wx, candidate)
+        return (wx, wy)
 
     def _tile_elevation(self, tile: tuple[int, int]) -> int:
         """tile 高程（P1-A）：未注入网格视为 0（flat 语义，存量零改动）。"""
@@ -484,8 +536,11 @@ class Renderer:
         return self._elevation.elevation_at(tile)
 
     def _elev_offset(self, tile: tuple[int, int]) -> int:
-        """实体按所在 tile 高程的屏幕 y 上移量（P1-A terrace）。"""
-        return self._tile_elevation(tile) * ELEVATION_STEP_PX
+        """实体按所在 tile 高程的屏幕 y 上移量（P1-A terrace）。
+
+        W3 isometric：偏移同比压缩（与整面缩放的地形烘焙偏移同一压缩系数，§3）。"""
+        offset = self._tile_elevation(tile) * ELEVATION_STEP_PX
+        return int(offset * ISO_Y_SCALE) if self._iso else offset
 
     @staticmethod
     def _tile_of_px(x: float, y: float) -> tuple[int, int]:
