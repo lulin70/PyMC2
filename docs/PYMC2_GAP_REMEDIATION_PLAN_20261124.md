@@ -126,5 +126,5 @@
 | W3-S3 | P7 测试计划 | ✅ 完成（[W3_TEST_PLAN_20261128.md](W3_TEST_PLAN_20261128.md)：单元 22 用例 + E2E 3 张 + 覆盖率 ≥80%） |
 | W3-S4 | P8 实现 | ✅ 完成（projection.py 新建 + renderer 双模式分支 + main.py CLI/拾取委托/相机钳制；755 passed 零破坏；isometric 不触碰 services/domain——FR-6.1 diff 审查通过） |
 | W3-S5 | P9 测试执行（E2E 3 张 → docs/assets/uat_w3/） | ✅ 完成（覆盖率 projection 100% / renderer 85%；程序断言全过：选中/移动 0.00px/高差排序/HUD 文本一致；目视验证通过；FR-5.2 验收方法修订已留痕） |
-| W3-S6 | 收口（CI 绿灯 + 文档回写） | ✅ 完成（CI run 见本波收口记录；P10/P11 不适用决策沿用 §7.2） |
+| W3-S6 | 收口（CI 绿灯 + 文档回写） | ✅ 完成（远端绿灯 [run 46156133479](https://github.com/lulin70/PyMC2/actions/runs/46156133479)，2026-11-28 commit 61d519c；P10/P11 不适用决策沿用 §7.2） |
 | **Gate** | **W3 收口门**：W3 DOD 全满足（FR-1~6 达成、四门禁绿、E2E 3 张、CI 绿灯、文档回写） | ✅ 通过 → W4-S1 启动（W5 朝向帧前置解锁：斜投影先于行走动画排序约束达成） |
