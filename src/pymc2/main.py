@@ -46,6 +46,7 @@ from pymc2.domain.scripting.mission_script import (
     load_mission_script,
 )
 from pymc2.infrastructure.mc2_assets import MC2AssetPack, default_pack_root
+from pymc2.presentation.mech_lab import MechLabState, draw_mech_lab, handle_mech_lab_event
 from pymc2.presentation.renderer import WINDOW_HEIGHT_PX, WINDOW_WIDTH_PX, Renderer, plan_decorations
 from pymc2.services.ai_commander import AiCommander
 from pymc2.services.battle_service import BattleService, create_m2_battle
@@ -159,6 +160,10 @@ class Game:
     # grant_rp 触发器中途入账在面板可见）。
     mission_id: str | None = None
     requisition_points: int | None = None
+    # W2 装配编辑器：屏幕状态分派（FR-4.1 L 键切换；lab 激活时战斗输入/推进挂起，
+    # 战局状态不变）。
+    screen_state: str = "battle"  # "battle" | "mech_lab"
+    mech_lab: MechLabState | None = None
 
 
 def create_game(
@@ -364,6 +369,14 @@ def handle_event(game: Game, event: pygame.event.Event) -> None:
     if event.type == pygame.QUIT:
         game.running = False
         return
+    # W2 装配编辑器事件路由（FR-4.1）：lab 激活时拦截全部输入，仅放行 L 退出。
+    if game.screen_state == "mech_lab":
+        if event.type == pygame.KEYDOWN and event.key == pygame.K_l:
+            game.screen_state = "battle"
+            return
+        if game.mech_lab is not None:
+            handle_mech_lab_event(game.mech_lab, event)
+        return
     if event.type == pygame.MOUSEMOTION:
         if game.drag_start is not None:
             game.drag_current = _world_pos(game, event.pos)
@@ -379,13 +392,41 @@ def handle_event(game: Game, event: pygame.event.Event) -> None:
         _finish_selection_drag(game, _world_pos(game, event.pos))
         return
     if event.type == pygame.KEYDOWN:
-        if event.key == FIRE_MODE_KEY:
+        if event.key == pygame.K_l:
+            _toggle_mech_lab(game)  # W2 装配编辑器（FR-4.1）
+        elif event.key == FIRE_MODE_KEY:
             _cycle_fire_mode(game)
         elif event.key == AUTO_COMMAND_KEY:
             _toggle_auto_command(game)
         elif event.key in MOVE_KEY_DIRECTIONS:
             dx, dy = MOVE_KEY_DIRECTIONS[event.key]
             _dispatch_formation_move(game.service, game.dispatcher, dx, dy)
+
+
+def _toggle_mech_lab(game: Game) -> None:
+    """W2 装配编辑器开关（FR-4.1）：L 键进入/退出；退出战局状态不变。
+
+    首次进入时惰性创建状态并注入确认回调（确认 → 应用到玩家首机甲 + 保存
+    default_player，FR-5.1 出击路径同源）。
+    """
+    if game.screen_state == "mech_lab":
+        game.screen_state = "battle"
+        return
+    if game.mech_lab is None:
+        state = MechLabState()
+        player_mech = next((m for m in game.service.mechs.values() if m.faction is Faction.PLAYER), None)
+
+        def _confirm(config: object) -> None:
+            if player_mech is not None:
+                from pymc2.domain.loadout import LoadoutConfig
+
+                assert isinstance(config, LoadoutConfig)
+                config.apply(player_mech)
+            game.mech_lab.service.save(config, "default_player")  # type: ignore[union-attr]
+
+        state.on_confirm = _confirm
+        game.mech_lab = state
+    game.screen_state = "mech_lab"
 
 
 def _poll_held_move(game: Game) -> None:
@@ -409,6 +450,10 @@ def run_frame(game: Game, dt: float) -> None:
     """处理输入、推进一帧并渲染。"""
     for event in pygame.event.get():
         handle_event(game, event)
+    # W2 装配编辑器分支（FR-4.1）：lab 激活时战斗推进挂起，仅绘制装配界面。
+    if game.screen_state == "mech_lab" and game.mech_lab is not None:
+        draw_mech_lab(game.screen, game.mech_lab)
+        return
     _poll_held_move(game)
     if game.commander is not None:
         game.commander.update(game.service, game.dispatcher)

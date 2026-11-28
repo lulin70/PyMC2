@@ -160,6 +160,14 @@ class Mech:
         """武器可用：挂载部位未摧毁（LA/RA 摧毁 → 该臂武器失效）。"""
         return not self.chassis.is_destroyed(self.weapon.mounted_location)
 
+    @property
+    def weapons(self) -> tuple[Weapon, ...]:
+        """全部挂载武器（chassis.slots 展平，W2 装配编辑器 §5.1）。
+
+        单武器存量路径语义不变：slots 仅一槽时恒等于 (weapon,)。
+        """
+        return tuple(w for slot in self.chassis.slots.values() for w in slot)
+
     # ------------------------------------------------------------------ Unit 协议增量（P2，纯加法）
 
     @property

@@ -271,10 +271,18 @@ class BattleService:
             return False
         if not attacker.weapon_operational:
             return False
-        if not attacker.weapon.ready:
-            return False
         distance = math.hypot(target.x - attacker.x, target.y - attacker.y)
-        if distance > attacker.weapon.range_px:
+        # W2 装配编辑器多武器化（设计 §5.2）：首个 ready 且射程覆盖且挂载部位存活的武器。
+        # 单武器存量恒等退化：weapons == (weapon,) → 选择器恒返回同一实例，行为逐字节一致。
+        weapon = next(
+            (
+                w
+                for w in attacker.weapons
+                if w.ready and w.range_px >= distance and not attacker.chassis.is_destroyed(w.mounted_location)
+            ),
+            None,
+        )
+        if weapon is None:
             return False
         if not self._has_line_of_sight(attacker, target):
             return False
@@ -282,6 +290,9 @@ class BattleService:
         # M4 技能成长：开火即记账（uses 必增，命中加记 successes）。
         if attacker.pilot is not None:
             attacker.pilot.record_shot(result.hit)
+        # W2：主武器指针切换——resolve_shot/build_projectiles/CD/热量均读 attacker.weapon，
+        # 切换后多武器各实例独立 CD（FR-5.3 / 2.1 残留核销）。
+        attacker.weapon = weapon
         # P2 武器三分类：BALLISTIC/ENERGY 单发，MISSILE 三发齐射（service 不感知剖面）。
         self.projectiles.extend(build_projectiles(attacker, target, result, self._rng, self.projectile_speed_px_s))
         attacker.weapon.cd_remaining = attacker.weapon.cooldown_s
@@ -431,8 +442,7 @@ class BattleService:
             if target is None:
                 continue
             if (
-                mech.weapon.ready
-                and mech.weapon_operational
+                any(w.ready and not mech.chassis.is_destroyed(w.mounted_location) for w in mech.weapons)
                 and not mech.heat.shutdown_active
                 and self._has_line_of_sight(mech, target)
             ):

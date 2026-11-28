@@ -44,12 +44,9 @@
 - **工作量**: 4人天
 - **依赖**: MissionScript扩展 + HUD目标面板
 
-#### 2.4 装配编辑器
-- **现状**: 机甲配置硬编码（底盘工厂）
-- **目标**: GUI拖拽武器/装甲 + 重量校验
-- **影响**: 无战前定制，不符MC2核心循环
-- **工作量**: 8人天（含UI布局）
-- **依赖**: RefitService GUI前端 + 槽位约束逻辑
+#### 2.4 装配编辑器 — ✅ 已实现（2026-11-28 W2 收口）
+- **实现证据**: domain/loadout.py（LoadoutConfig/吨位表）+ services/loadout_service.py（校验/IO 白名单）+ presentation/mech_lab.py（三栏拖拽 GUI）+ mech.weapons 多武器 + battle_service 开火多武器化（独立 CD，2.1 残留核销）
+- **验收**: 618 passed（含 26 新增）；覆盖率 91%；E2E 3 张 docs/assets/uat_w2/
 
 ---
 
