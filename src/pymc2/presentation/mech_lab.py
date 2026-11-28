@@ -6,6 +6,8 @@
 
 from __future__ import annotations
 
+from collections.abc import Callable
+
 import pygame
 
 from pymc2.domain.loadout import (
@@ -70,7 +72,7 @@ class MechLabState:
         self.error_frames: int = 0
         self.font: pygame.font.Font | None = None
         # 确认回调（main 注入：应用配置到玩家机甲 + 保存，FR-5.1）；None=仅内存编辑
-        self.on_confirm = None
+        self.on_confirm: Callable[[LoadoutConfig], None] | None = None
         try:
             pygame.font.init()
             self.font = pygame.font.Font(None, 18)

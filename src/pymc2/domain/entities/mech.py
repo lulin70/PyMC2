@@ -168,6 +168,10 @@ class Mech:
         """
         return tuple(w for slot in self.chassis.slots.values() for w in slot)
 
+    def is_location_destroyed(self, location: MechLocation) -> bool:
+        """部位摧毁判定（Unit 协议：battle_service 多武器选择器使用）。"""
+        return self.chassis.is_destroyed(location)
+
     # ------------------------------------------------------------------ Unit 协议增量（P2，纯加法）
 
     @property

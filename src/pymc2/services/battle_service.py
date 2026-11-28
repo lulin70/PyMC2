@@ -278,7 +278,7 @@ class BattleService:
             (
                 w
                 for w in attacker.weapons
-                if w.ready and w.range_px >= distance and not attacker.chassis.is_destroyed(w.mounted_location)
+                if w.ready and w.range_px >= distance and not attacker.is_location_destroyed(w.mounted_location)
             ),
             None,
         )
@@ -442,7 +442,7 @@ class BattleService:
             if target is None:
                 continue
             if (
-                any(w.ready and not mech.chassis.is_destroyed(w.mounted_location) for w in mech.weapons)
+                any(w.ready and not mech.is_location_destroyed(w.mounted_location) for w in mech.weapons)
                 and not mech.heat.shutdown_active
                 and self._has_line_of_sight(mech, target)
             ):

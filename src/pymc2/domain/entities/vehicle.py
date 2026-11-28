@@ -92,6 +92,15 @@ class Vehicle:
         return self.alive
 
     @property
+    def weapons(self) -> tuple[Weapon, ...]:
+        """单武器恒等（Unit 协议：W2 多武器选择器兼容口径）。"""
+        return (self.weapon,)
+
+    def is_location_destroyed(self, location: MechLocation) -> bool:
+        """载具无部位结构：恒未摧毁（协议兼容实现）。"""
+        return False
+
+    @property
     def mobility_penalty(self) -> float:
         """机动惩罚恒 0：载具无部位损毁传导。"""
         return 0.0

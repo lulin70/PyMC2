@@ -38,7 +38,8 @@ from pathlib import Path
 import pygame
 
 from pymc2.domain.elevation import ElevationGrid, generate_hills
-from pymc2.domain.entities.mech import MAP_SIZE_PX, MAP_TILES, TILE_SIZE_PX, Faction, FireMode
+from pymc2.domain.entities.mech import MAP_SIZE_PX, MAP_TILES, TILE_SIZE_PX, Faction, FireMode, Mech
+from pymc2.domain.loadout import LoadoutConfig
 from pymc2.domain.orders.tactical_order import OrderOrigin, OrderType, TacticalOrder
 from pymc2.domain.scripting.mission_script import (
     ScriptContext,
@@ -416,13 +417,10 @@ def _toggle_mech_lab(game: Game) -> None:
         state = MechLabState()
         player_mech = next((m for m in game.service.mechs.values() if m.faction is Faction.PLAYER), None)
 
-        def _confirm(config: object) -> None:
-            if player_mech is not None:
-                from pymc2.domain.loadout import LoadoutConfig
-
-                assert isinstance(config, LoadoutConfig)
+        def _confirm(config: LoadoutConfig) -> None:
+            if isinstance(player_mech, Mech):
                 config.apply(player_mech)
-            game.mech_lab.service.save(config, "default_player")  # type: ignore[union-attr]
+            state.service.save(config, "default_player")
 
         state.on_confirm = _confirm
         game.mech_lab = state
