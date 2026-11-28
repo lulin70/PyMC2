@@ -112,6 +112,7 @@
 | W2-S1 | P1 需求分析 | ✅ 完成（[W2_REQUIREMENTS_20261128.md](W2_REQUIREMENTS_20261128.md)：FR-1~6 可量化验收标准，四角色评审通过，Exit Gate 达成） |
 | W2-S2 | P3 技术设计 | ✅ 完成（[W2_DESIGN_20261128.md](W2_DESIGN_20261128.md)：四层架构 + 吨位分档表 + 开火多武器化单武器恒等退化方案；底盘吨位表已按 PRD §4.1 核对） |
 | W2-S3 | P7 测试计划 | ✅ 完成（[W2_TEST_PLAN_20261128.md](W2_TEST_PLAN_20261128.md)：17+ 用例清单 + E2E 3 张 + 覆盖率 ≥80%） |
-| W2-S4 | P8 实现 | ✅ 完成（loadout.py + loadout_service.py + mech_lab.py + mech.weapons + 开火路径多武器化 + main.py L 键集成；618 passed 零破坏） |
+| W2-S4 | P8 实现 | ✅ 完成（loadout.py + loadout_service.py + mech_lab.py + Unit 协议 weapons/is_location_destroyed + 开火路径多武器化 + main.py L 键集成；733 passed 零破坏） |
 | W2-S5 | P9 测试执行（E2E 3 张 → docs/assets/uat_w2/） | ✅ 完成（覆盖率 91%；3 张截图目视验证通过） |
-| W2-S6 | 收口（CI 绿灯 + 文档回写） | ✅ 完成（CI run 见本波收口记录；P10/P11 不适用决策沿用 §7.2） |
+| W2-S6 | 收口（CI 绿灯 + 文档回写） | ✅ 完成（CI mypy 7→5 错修复：协议扩展 + isinstance 窄化 + 回调注解，commit cecdc56；远端绿灯 [run 46111440026](https://github.com/lulin70/PyMC2/actions/runs/46111440026)；P10/P11 不适用决策沿用 §7.2） |
+| **Gate** | **W2 收口门**：W2 DOD 全满足（FR-1~6 验收标准达成、四门禁绿、E2E 3 张、CI 绿灯、文档回写） | ✅ 通过 → W3-S1 启动 |
