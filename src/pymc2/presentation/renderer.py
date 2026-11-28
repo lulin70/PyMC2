@@ -386,8 +386,10 @@ class Renderer:
             terrain = self._mission_terrain.terrain
             if tile_y < len(terrain.tiles) and tile_x < len(terrain.tiles[tile_y]):
                 tile_data = terrain.tiles[tile_y][tile_x]
-                if tile_data.texture_id is not None:
-                    # pak texture_id → TGA 查表（triple fallback：TGA → undefined.tga → JPG pool → None）
+                if tile_data.texture_id is not None and assets.knows_texture(tile_data.texture_id):
+                    # pak texture_id → TGA 查表（索引命中才启用，W1 §1.4.1 门控；
+                    # 未命中回退 JPG 池——Day-1 实测 textureData 为打包 RGBA 颜色，
+                    # 索引假设证伪，盲目查表会全图命中 undefined.tga 品红占位）
                     # ground_tile_by_index 已处理缩放（返回 64×64 px），直接缩放到 TILE_SIZE_PX
                     indexed_texture = assets.ground_tile_by_index(
                         tile_data.texture_id,
@@ -434,7 +436,8 @@ class Renderer:
             terrain = self._mission_terrain.terrain
             if tile_y < len(terrain.tiles) and tile_x < len(terrain.tiles[tile_y]):
                 tile_data = terrain.tiles[tile_y][tile_x]
-                if tile_data.texture_id is not None:
+                if tile_data.texture_id is not None and assets.knows_texture(tile_data.texture_id):
+                    # 索引命中才查表（W1 §1.4.1 门控，同 _fill_grass_tile）
                     indexed_texture = assets.ground_tile_by_index(
                         tile_data.texture_id,
                         tile_data.terrain_type or 0,

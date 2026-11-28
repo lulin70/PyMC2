@@ -746,6 +746,15 @@ class MC2AssetPack:
         # 路径 4：None（渲染层回退程序化色块）
         return None
 
+    def knows_texture(self, texture_id: int) -> bool:
+        """texture_id 是否命中 Textures/64/ 查表索引（W1 §1.4.1 保守门控）。
+
+        Day-1 实测（2026-11-28）：mc2_01.pak textureData 值域 16711680-16777945
+        （≈0xFF02DA / 0xFFFFFF99，打包 RGBA 颜色），"纹理索引"假设证伪 → 渲染侧
+        仅在索引命中时启用 TGA 查表，未命中回退 JPG 池（零破坏）。
+        """
+        return texture_id in self._texture_index
+
     def resolve_ground(self, terrain_kind: str, seed: int = 0) -> pygame.Surface | None:
         """terrain_kind → 地面纹理：候选池按 ``seed % len`` 确定性选张（同 seed 同结果，
         帧内确定性）；池空（未注入资产/未登记 kind）→ None（渲染层回退程序化色块）。"""
